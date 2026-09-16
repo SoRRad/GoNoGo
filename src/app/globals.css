@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+  /* No rubber-banding behind the annotation surface. */
+  overscroll-behavior: none;
+  background: #0b0b0d;
+  color: #e8e8ec;
+  /* System stack only: no webfont is ever fetched. */
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * The annotation screen owns the viewport. Selection and the iOS callout menu
+ * would otherwise fire on a long press with a finger or a pencil.
+ */
+.no-touch-ui {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Pointer events only: the browser must not claim the gesture for scrolling. */
+.drawing-surface {
+  touch-action: none;
+  cursor: crosshair;
+}
+
+/* Full viewport height that survives the iPad Safari toolbars. */
+.viewport-fill {
+  height: 100dvh;
+  max-height: 100dvh;
+}
+
+input[type='range'] {
+  accent-color: #9ca3af;
+}

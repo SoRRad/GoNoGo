@@ -1,0 +1,14 @@
+node_modules/
+.next/
+dist/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Runtime data: database, frames, masks, exports. Never committed.
+data/
+!data/.gitkeep
+
+.env
+.env.local
+.DS_Store

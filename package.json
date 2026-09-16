@@ -1,0 +1,42 @@
+{
+  "name": "sadi-gonogo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SADI Go/No-Go dissection zone annotation platform",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit",
+    "build:scripts": "tsc -p tsconfig.scripts.json",
+    "seed:frames": "node scripts/ensure-built.js && node dist/scripts/seed-frames.js",
+    "seed:surgeons": "node scripts/ensure-built.js && node dist/scripts/seed-surgeons.js",
+    "assign": "node scripts/ensure-built.js && node dist/scripts/assign.js",
+    "export": "node scripts/ensure-built.js && node dist/scripts/export.js",
+    "make:dummy": "node scripts/ensure-built.js && node dist/scripts/make-dummy-frames.js",
+    "db:reset": "node scripts/ensure-built.js && node dist/scripts/db-reset.js"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^13.0.3",
+    "image-size": "^2.0.4",
+    "jpeg-js": "^0.4.4",
+    "next": "15.5.25",
+    "pngjs": "^7.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/archiver": "^6.0.4",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.10.0",
+    "@types/pngjs": "^6.0.5",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.5.28",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.9.3"
+  }
+}

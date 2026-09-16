@@ -1,0 +1,37 @@
+# Caddy in front of the app: automatic HTTPS from Let's Encrypt, nothing else.
+#
+# Copy to /etc/caddy/Caddyfile on the VM, replace the domain and the email,
+# then: sudo systemctl reload caddy
+#
+# DNS must already point at the VM's static IP before Caddy starts, or the
+# certificate request will fail.
+
+{
+	# Let's Encrypt uses this only for expiry warnings.
+	email you@example.org
+}
+
+study.example.org {
+	encode zstd gzip
+
+	# Mask uploads are small binary PNGs, but be explicit rather than unbounded.
+	request_body {
+		max_size 32MB
+	}
+
+	# The export streams a zip that can take minutes on a finished study.
+	reverse_proxy 127.0.0.1:3000 {
+		flush_interval -1
+	}
+
+	log {
+		output file /var/log/caddy/study.log
+		# Access tokens travel in the URL path, so do not log full URIs.
+		format filter {
+			wrap console
+			fields {
+				request>uri delete
+			}
+		}
+	}
+}

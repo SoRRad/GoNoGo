@@ -1,0 +1,12 @@
+node_modules
+.next
+dist
+data
+.git
+.github
+.env
+.env.local
+*.log
+README.md
+Caddyfile.example
+docker-compose.yml
