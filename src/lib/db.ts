@@ -49,7 +49,7 @@ export interface Annotation {
   submitted_at: string | null;
 }
 
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE IF NOT EXISTS surgeons (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   name              TEXT    NOT NULL,
@@ -103,6 +103,15 @@ CREATE INDEX IF NOT EXISTS idx_annotations_submitted  ON annotations (surgeon_id
 CREATE INDEX IF NOT EXISTS idx_frames_practice        ON frames (is_practice);
 `;
 
+/**
+ * Applies the schema to a connection. Exported so tests can build a database
+ * from the same DDL the application runs, rather than a copy that can drift.
+ */
+export function applySchema(db: Database.Database): void {
+  db.pragma('foreign_keys = ON');
+  db.exec(SCHEMA);
+}
+
 let instance: Database.Database | null = null;
 
 // Next's dev server re-evaluates modules on every hot reload; without this the
@@ -122,7 +131,7 @@ export function getDb(): Database.Database {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
-  db.exec(SCHEMA);
+  applySchema(db);
 
   instance = db;
   globalForDb.__sadiDb = db;

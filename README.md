@@ -382,22 +382,44 @@ A frame the surgeon has not touched never creates a row.
 ## Testing
 
 ```bash
-npm run typecheck     # both the app and the CLI scripts
-npm run build         # production build
+npm test          # Vitest: queue, masks, analysis, export
+npm run typecheck # both the app and the CLI scripts
+npm run lint
+npm run build
 ```
 
-The pipeline was verified end to end against synthetic frames: queue invariants (repeat gap,
-practice ordering, disjoint individual sets) over 400 shuffle seeds, mask PNG round-trips, the full
-surgeon flow including resume-after-reload and one-step-back, admin access control, and a consensus
-export that recomputes to the exact same pixels from the individual masks it ships alongside.
+`.github/workflows/ci.yml` runs all four on every push and pull request, on Node 20
+to match the image.
 
-**Not yet done:** the Docker image has not been built and run — this was developed in a sandbox with
-a Docker CLI but no daemon. `docker compose config` validates and the production build and server
-were exercised directly, but please run `docker compose up -d --build` once before the study opens.
+The suite covers the pure logic, with no browser and no fixtures beyond an
+in-memory SQLite database built from the real schema:
 
-**Still required before the study opens:** test on the real iPad, with a finger and with the pencil,
-on `/canvas-lab` first and then on a real frame. Emulated touch and pen input pass, but that is not
-the same as the glass.
+- **Queue** — seeded shuffles are permutations and reproduce per seed; the repeat
+  gap holds across 400 seeds; practice frames always lead; every repeat points at
+  an earlier showing of the same frame; individual sets are disjoint and spread
+  across videos, including when there are fewer videos than surgeons.
+- **Masks** — binary PNG round-trips exactly, including all-zero and all-one;
+  uploads are read by alpha rather than brightness; majority vote is checked
+  against hand-computed answers at 2, 3, 4 and 5 raters, and an even split never
+  carries; IoU and pixel agreement against hand-computed values.
+- **Analysis** — `nothing_to_mark` counts as an all-zero voter, `cannot_assess` is
+  excluded, unsubmitted annotations are ignored, and a missing or wrongly sized
+  mask file degrades to all-zero instead of throwing.
+- **Export** — CSV quoting round-trips commas, quotes and newlines; the consensus
+  mask recomputes to the same pixels from the individual masks shipped beside it.
+
+Beyond the suite, the browser behaviour was exercised by driving a real Chromium:
+the full surgeon flow including resume-after-reload and one-step-back, admin
+access control, and pointer input with finger, pen and palm rejection.
+
+**Not yet done:** the Docker image has not been built and run — this was
+developed in a sandbox with a Docker CLI but no daemon. `docker compose config`
+validates and the production build and server were exercised directly, but please
+run `docker compose up -d --build` once before the study opens.
+
+**Still required before the study opens:** test on the real iPad, with a finger
+and with the pencil, on `/canvas-lab` first and then on a real frame. Emulated
+touch and pen input pass, but that is not the same as the glass.
 
 ### Note on `npm audit`
 

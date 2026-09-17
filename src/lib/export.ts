@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import archiver from 'archiver';
+import type Database from 'better-sqlite3';
 import jpeg from 'jpeg-js';
 import { PNG } from 'pngjs';
 import { getDb } from './db';
@@ -39,24 +40,27 @@ const CSV_COLUMNS = [
   'submitted_at',
 ] as const;
 
-function csvCell(value: unknown): string {
+/** RFC 4180 quoting: wrap in quotes and double any embedded quote. */
+export function csvCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   const text = String(value);
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-/** Frames are exported as PNG regardless of how they were ingested. */
-function framePngBuffer(frame: Frame): Buffer | null {
+/**
+ * A frame already stored as PNG is referenced by path so the archiver streams
+ * it straight off disk; a JPEG has to be transcoded, one at a time, because the
+ * export format is PNG throughout.
+ */
+function frameEntryBody(frame: Frame): { buffer: Buffer } | { sourcePath: string } | null {
   const absolute = framePath(frame.filename);
   if (!fs.existsSync(absolute)) return null;
-  const source = fs.readFileSync(absolute);
-  const extension = path.extname(frame.filename).toLowerCase();
-  if (extension === '.png') return source;
+  if (path.extname(frame.filename).toLowerCase() === '.png') return { sourcePath: absolute };
 
-  const decoded = jpeg.decode(source, { useTArray: true, formatAsRGBA: true });
+  const decoded = jpeg.decode(fs.readFileSync(absolute), { useTArray: true, formatAsRGBA: true });
   const png = new PNG({ width: decoded.width, height: decoded.height });
   png.data = Buffer.from(decoded.data.buffer, decoded.data.byteOffset, decoded.data.length);
-  return PNG.sync.write(png);
+  return { buffer: PNG.sync.write(png) };
 }
 
 const README = `SADI Go/No-Go dissection zone study — data export
@@ -123,13 +127,24 @@ export interface ExportStats {
   annotations: number;
 }
 
+/** One file in the export: either bytes we built, or a file to stream off disk. */
+export type ExportEntry =
+  | { name: string; buffer: Buffer }
+  | { name: string; text: string }
+  | { name: string; sourcePath: string };
+
 /**
- * Builds the export archive. The caller pipes it somewhere and awaits the
- * stream; `finalize()` has already been called by the time this returns.
+ * Walks the study and hands every export file to `emit`, in order.
+ *
+ * Emitting rather than returning an array keeps memory bounded: a finished
+ * study is hundreds of megabytes of frames, and the archiver consumes each
+ * entry as it is produced. It also gives tests a seam that does not involve
+ * unzipping anything.
  */
-export function createExportArchive(): { archive: archiver.Archiver; stats: ExportStats } {
-  const db = getDb();
-  const archive = archiver('zip', { zlib: { level: 9 } });
+export function collectExportEntries(
+  db: Database.Database,
+  emit: (entry: ExportEntry) => void,
+): ExportStats {
   const stats: ExportStats = { frames: 0, masks: 0, consensusFrames: 0, annotations: 0 };
 
   const frames = db.prepare('SELECT * FROM frames ORDER BY id').all() as Frame[];
@@ -142,9 +157,9 @@ export function createExportArchive(): { archive: archiver.Archiver; stats: Expo
     // Only export a frame that somebody actually rated.
     if (contributing === 0) continue;
 
-    const frameBuffer = framePngBuffer(frame);
-    if (frameBuffer) {
-      archive.append(frameBuffer, { name: `export/frames/${frame.id}.png` });
+    const frameBody = frameEntryBody(frame);
+    if (frameBody) {
+      emit({ name: `export/frames/${frame.id}.png`, ...frameBody });
       stats.frames++;
     }
 
@@ -152,8 +167,9 @@ export function createExportArchive(): { archive: archiver.Archiver; stats: Expo
       for (const rater of raters[layer]) {
         paintedCache.set(`${frame.id}:${rater.surgeonId}:${layer}`, rater.painted);
         if (rater.painted === 0) continue;
-        archive.append(encodeBinaryMaskPng(frame.width, frame.height, rater.occupancy), {
+        emit({
           name: `export/masks/${frame.id}__${rater.surgeonId}__${layer}.png`,
+          buffer: encodeBinaryMaskPng(frame.width, frame.height, rater.occupancy),
         });
         stats.masks++;
       }
@@ -166,8 +182,9 @@ export function createExportArchive(): { archive: archiver.Archiver; stats: Expo
           frame.width,
           frame.height,
         );
-        archive.append(encodeBinaryMaskPng(frame.width, frame.height, vote), {
+        emit({
           name: `export/consensus/${frame.id}__${layer}_majority.png`,
+          buffer: encodeBinaryMaskPng(frame.width, frame.height, vote),
         });
       }
       stats.consensusFrames++;
@@ -217,15 +234,33 @@ export function createExportArchive(): { archive: archiver.Archiver; stats: Expo
     lines.push(CSV_COLUMNS.map((column) => csvCell(row[column])).join(','));
   }
   stats.annotations = rows.length;
-  archive.append(lines.join('\n') + '\n', { name: 'export/annotations.csv' });
+  emit({ name: 'export/annotations.csv', text: lines.join('\n') + '\n' });
 
-  archive.append(
-    README.replace('{{GENERATED}}', new Date().toISOString()).replace(
+  emit({
+    name: 'export/README.txt',
+    text: README.replace('{{GENERATED}}', new Date().toISOString()).replace(
       '{{COLUMNS}}',
       CSV_COLUMNS.map((column) => `      ${column}`).join('\n'),
     ),
-    { name: 'export/README.txt' },
-  );
+  });
+
+  return stats;
+}
+
+/**
+ * Builds the export archive. The caller pipes it somewhere and awaits the
+ * stream; `finalize()` has already been called by the time this returns.
+ */
+export function createExportArchive(
+  db: Database.Database = getDb(),
+): { archive: archiver.Archiver; stats: ExportStats } {
+  const archive = archiver('zip', { zlib: { level: 9 } });
+
+  const stats = collectExportEntries(db, (entry) => {
+    if ('sourcePath' in entry) archive.file(entry.sourcePath, { name: entry.name });
+    else if ('buffer' in entry) archive.append(entry.buffer, { name: entry.name });
+    else archive.append(entry.text, { name: entry.name });
+  });
 
   void archive.finalize();
   return { archive, stats };
