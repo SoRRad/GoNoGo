@@ -16,13 +16,19 @@ import { getDb } from '../src/lib/db';
 import type { Frame, Surgeon } from '../src/lib/db';
 import { ensureDataDirs } from '../src/lib/paths';
 import {
+  CORE_SELECTION_SEED,
   CORE_TARGET,
   INDIVIDUAL_TARGET,
   buildQueue,
+  countDistinctVideos,
+  dealIndividualSets,
   deriveEstablishedCoreSet,
   frameIdsAlreadyIndividual,
   selectCoreSet,
 } from '../src/lib/queue';
+
+/** Above this, one video dominates a surgeon's set enough to worry about. */
+const VIDEO_CONCENTRATION_WARNING = 0.3;
 
 function main() {
   const reset = process.argv.includes('--reset');
@@ -123,19 +129,21 @@ function main() {
     console.log('  Not enough unassigned frames to give every surgeon a unique set; core frames only.');
   }
 
+  // Spread each surgeon's unique frames across videos rather than handing out
+  // contiguous blocks, which would tie surgeon identity to patient identity.
+  const deal = dealIndividualSets(availableIndividual, pending.length, perSurgeon, CORE_SELECTION_SEED ^ 0x9e37);
+
   const insertAssignment = db.prepare(
     `INSERT INTO assignments (surgeon_id, frame_id, display_order, is_repeat, repeat_of_assignment_id)
      VALUES (?, ?, ?, ?, NULL)`,
   );
   const linkRepeat = db.prepare('UPDATE assignments SET repeat_of_assignment_id = ? WHERE id = ?');
 
-  let cursor = 0;
   const summaries: string[] = [];
 
   const run = db.transaction(() => {
-    for (const surgeon of pending) {
-      const individual = availableIndividual.slice(cursor, cursor + perSurgeon).map((frame) => frame.id);
-      cursor += perSurgeon;
+    for (const [surgeonIndex, surgeon] of pending.entries()) {
+      const individual = deal.sets[surgeonIndex];
 
       const queue = buildQueue(
         practiceFrames.map((frame) => frame.id),
@@ -180,6 +188,35 @@ function main() {
 
   console.log(`Built queues for ${pending.length} surgeon(s):`);
   for (const summary of summaries) console.log(summary);
+
+  if (perSurgeon > 0) {
+    console.log('');
+    console.log('Source-video spread of each surgeon\'s individual frames:');
+    const concentrated: string[] = [];
+    for (const [surgeonIndex, surgeon] of pending.entries()) {
+      const videos = deal.videosPerSurgeon[surgeonIndex];
+      const share = deal.maxVideoShare[surgeonIndex];
+      const flag = share > VIDEO_CONCENTRATION_WARNING ? '  <-- concentrated' : '';
+      console.log(
+        `  ${surgeon.name.padEnd(24)} ${String(videos).padStart(3)} distinct videos  ` +
+          `largest single video ${(share * 100).toFixed(0).padStart(3)}%${flag}`,
+      );
+      if (share > VIDEO_CONCENTRATION_WARNING) concentrated.push(surgeon.name);
+    }
+    if (concentrated.length > 0) {
+      console.log('');
+      console.log(`  WARNING: ${concentrated.length} surgeon(s) draw more than ` +
+        `${Math.round(VIDEO_CONCENTRATION_WARNING * 100)}% of their individual frames from a single video.`);
+      console.log('  That ties their results to one patient. Load frames from more videos if you can;');
+      console.log('  the deal already spreads them as widely as the pool allows.');
+    }
+  }
+
+  const coreFrames = studyFrames.filter((frame) => coreSet.has(frame.id));
+  console.log('');
+  console.log(
+    `Core set: ${coreIds.length} frames spanning ${countDistinctVideos(coreFrames)} distinct source videos.`,
+  );
 
   const overlap = db
     .prepare(

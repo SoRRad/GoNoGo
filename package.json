@@ -15,7 +15,9 @@
     "assign": "node scripts/ensure-built.js && node dist/scripts/assign.js",
     "export": "node scripts/ensure-built.js && node dist/scripts/export.js",
     "make:dummy": "node scripts/ensure-built.js && node dist/scripts/make-dummy-frames.js",
-    "db:reset": "node scripts/ensure-built.js && node dist/scripts/db-reset.js"
+    "db:reset": "node scripts/ensure-built.js && node dist/scripts/db-reset.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "archiver": "^7.0.1",
@@ -37,6 +39,7 @@
     "autoprefixer": "^10.4.20",
     "postcss": "^8.5.28",
     "tailwindcss": "^3.4.19",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
   }
 }
