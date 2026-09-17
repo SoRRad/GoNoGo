@@ -344,22 +344,93 @@ docker compose exec app npm run assign
 
 Email each surgeon their own link. Nothing else is needed from them.
 
-### 7. Back up
+### 7. Back up, nightly
 
-Everything is under one directory. There is nothing else to back up.
+Everything is under one directory, so there is nothing else to back up.
+
+`scripts/backup.sh` takes a consistent SQLite snapshot through the online backup
+API, tars it with the frames and masks, uploads to Google Cloud Storage, and
+verifies the upload arrived. It refuses to run without a bucket.
+
+> A plain `cp` of `app.db` is **not** safe. The database runs in WAL mode, so at
+> any instant the committed state is split between `app.db` and `app.db-wal`;
+> copying them separately while a surgeon is autosaving produces a file that
+> opens perfectly and is quietly missing the most recent annotations.
 
 ```bash
-sudo tar czf /tmp/sadi-$(date +%F).tar.gz -C /mnt/disks/sadi-data .
-gcloud compute scp sadi-study:/tmp/sadi-$(date +%F).tar.gz . --zone=us-central1-a
+# Create the bucket, in the same region as the VM
+gsutil mb -l us-central1 gs://sadi-study-backups
+gsutil versioning set on gs://sadi-study-backups
+
+# Tell the backup where to put things
+sudo tee /etc/sadi-backup.env > /dev/null <<'EOF'
+BACKUP_BUCKET=gs://sadi-study-backups
+EOF
+sudo chmod 600 /etc/sadi-backup.env
+
+# Run it once by hand and watch it work
+sudo BACKUP_BUCKET=gs://sadi-study-backups /opt/sadi/app/scripts/backup.sh
+
+# Then schedule it for 02:30 UTC nightly
+sudo cp /opt/sadi/app/deploy/sadi-backup.service /etc/systemd/system/
+sudo cp /opt/sadi/app/deploy/sadi-backup.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sadi-backup.timer
+systemctl list-timers sadi-backup.timer
 ```
 
-Or take a disk snapshot:
+The VM's service account needs `roles/storage.objectCreator` on the bucket.
+
+Disk snapshots are a useful second line, but they are not a substitute: they
+capture the WAL mid-write just as a file copy does.
 
 ```bash
-gcloud compute disks snapshot sadi-data --zone=us-central1-a --snapshot-names=sadi-$(date +%F)
+gcloud compute disks snapshot sadi-data --zone=us-central1-a   --snapshot-names=sadi-$(date +%F)
 ```
 
-To pull the finished study off the machine, use the export button in `/admin`, or:
+### 8. Restore, and prove it works
+
+**A backup nobody has restored is not a backup.** Do this once, on a throwaway
+machine or a scratch directory, before the study opens — and put a tick in the
+checklist below only after you have seen the annotation count come back.
+
+```bash
+# 1. Fetch an archive
+gsutil ls gs://sadi-study-backups
+gsutil cp gs://sadi-study-backups/sadi-2026-09-17T02-30-11Z.tar.gz /tmp/
+
+# 2. Unpack it somewhere that is NOT the live data directory
+mkdir -p /tmp/restore && tar xzf /tmp/sadi-*.tar.gz -C /tmp/restore
+ls /tmp/restore                      # app-<stamp>.db, frames/, masks/
+
+# 3. Check the database opens and holds what you expect
+docker compose exec -T app node -e "
+  const D = require('better-sqlite3');
+  const db = new D('/data/restore/app-<stamp>.db', { readonly: true });
+  console.log('integrity:', db.pragma('integrity_check', { simple: true }));
+  console.log('annotations:', db.prepare('SELECT COUNT(*) n FROM annotations').get().n);
+  console.log('submitted:', db.prepare('SELECT COUNT(*) n FROM annotations WHERE submitted_at IS NOT NULL').get().n);
+"
+```
+
+To restore for real, onto a fresh machine:
+
+```bash
+docker compose down                  # stop writers first
+sudo rm -rf /mnt/disks/sadi-data/{app.db,app.db-wal,app.db-shm,frames,masks}
+sudo cp /tmp/restore/app-<stamp>.db /mnt/disks/sadi-data/app.db
+sudo cp -r /tmp/restore/frames /tmp/restore/masks /mnt/disks/sadi-data/
+sudo chown -R 1001:1001 /mnt/disks/sadi-data
+docker compose up -d
+curl -s localhost:3000/api/health     # expect {"ok":true}
+```
+
+Surgeons' links keep working: tokens live in the database and are restored with
+it. `SESSION_SECRET` must be the same as before, or everyone is signed out and
+has to reopen their link.
+
+To pull the finished study off the machine, use the export button in `/admin`,
+or:
 
 ```bash
 docker compose exec app npm run export
@@ -376,6 +447,33 @@ The database and masks live on the mounted disk, untouched by a rebuild.
 
 ---
 
+## Operational status
+
+Tick every line before a real surgeon is sent a link. Each is something that has
+silently failed for somebody else.
+
+- [ ] **Docker image built and run.** `docker compose up -d --build`, then
+      `docker compose ps` shows `healthy`. Never exercised in development — see
+      Testing below.
+- [ ] **iPad tested, finger and pencil.** `/canvas-lab` first, then a real frame
+      through a real access link. Lasso must not lag and the page must not
+      scroll under the hand.
+- [ ] **Backup taken and restored once.** Not just scheduled: actually unpacked,
+      opened, and the annotation count checked. See step 8.
+- [ ] **Admin password rotated** off anything that appeared in a README, a
+      script, or a shell history. `openssl rand -base64 24`.
+- [ ] **SESSION_SECRET generated** and recorded somewhere it can be recovered.
+      `openssl rand -hex 32`. Losing it signs everyone out; changing it after
+      launch does the same.
+- [ ] **HTTPS verified.** `curl -sI https://your-domain | head -1` returns 200
+      over TLS, and plain http redirects. Check the certificate is real.
+- [ ] **Frames reviewed for identifiers** — in the images themselves and in the
+      filenames, which appear in the export and the admin interface. The
+      software does no de-identification. See `GOVERNANCE.md`.
+- [ ] **Queue sizes confirmed.** `npm run assign` reported no shortfall warning,
+      or the reduced sizes were a deliberate decision.
+- [ ] **GOVERNANCE.md read** by whoever is answering to the ethics committee.
+
 ## Configuration
 
 | Variable | Required | Meaning |
@@ -385,6 +483,8 @@ The database and masks live on the mounted disk, untouched by a rebuild.
 | `BASE_URL` | yes | Public origin. Used to print access links, and decides whether cookies are marked `Secure`. |
 | `DATA_DIR` | no | Where the database, frames and masks live. Defaults to `./data`, set to `/data` in the image. |
 | `DATA_HOST_PATH` | compose only | Host directory behind the named volume. Defaults to `./data`. |
+| `BACKUP_BUCKET` | backups only | Google Cloud Storage bucket for `scripts/backup.sh`, e.g. `gs://sadi-study-backups`. Nothing is uploaded unless it is set. |
+| `KEEP_LOCAL` | no | Local backup archives to keep on the VM. Defaults to 7. |
 
 ---
 
@@ -473,6 +573,17 @@ run `docker compose up -d --build` once before the study opens.
 **Still required before the study opens:** test on the real iPad, with a finger
 and with the pencil, on `/canvas-lab` first and then on a real frame. Emulated
 touch and pen input pass, but that is not the same as the glass.
+
+## Governance, licence and citation
+
+- **`GOVERNANCE.md`** — what is stored, where it lives, who can see it, how long
+  it is kept, what happens at study close, and how to remove a participant's data
+  on request. Written to be handed to an IRB reviewer.
+- **`LICENSE`** — MIT, and it covers **the software only**. It grants no rights
+  in the surgical frames, the annotations, or any dataset assembled with it;
+  those are governed by the study protocol and the ethics approval.
+- **`CITATION.cff`** — carries a placeholder DOI. Replace it when a release is
+  archived.
 
 ### Note on `npm audit`
 

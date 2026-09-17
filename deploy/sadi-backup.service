@@ -1,0 +1,13 @@
+[Unit]
+Description=SADI study backup to Google Cloud Storage
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/sadi/app
+# Set BACKUP_BUCKET here, or in /etc/sadi-backup.env
+EnvironmentFile=-/etc/sadi-backup.env
+Environment=DATA_DIR=/mnt/disks/sadi-data
+ExecStart=/opt/sadi/app/scripts/backup.sh

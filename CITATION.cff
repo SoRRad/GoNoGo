@@ -1,0 +1,30 @@
+cff-version: 1.2.0
+title: SADI Go/No-Go dissection zone annotation platform
+message: >-
+  If you use this software in research, please cite it. The licence covers the
+  software only, never the surgical frames or the annotations produced with it.
+type: software
+authors:
+  - name: SADI Go/No-Go study contributors
+    # Replace with the named authors before publication.
+repository-code: https://github.com/SoRRad/GoNoGo
+abstract: >-
+  A web application for collecting independent Go and No-Go dissection zone
+  annotations from multiple surgeons on still frames from robotic duodenal
+  switch procedures. Surgeons draw zones on a hand-written pointer-event canvas,
+  masks are stored per surgeon at native resolution and never merged, and the
+  export reports inter-rater agreement (IoU, Dice, normalised surface distance,
+  chance-corrected presence agreement) alongside intra-rater reliability
+  measured from hidden repeated frames.
+keywords:
+  - surgical data science
+  - inter-rater reliability
+  - image annotation
+  - duodenal switch
+  - SADI-S
+license: MIT
+version: 1.0.0
+date-released: '2026-09-17'
+# Replace with the DOI issued when the software or dataset is archived,
+# for example by depositing a release in Zenodo.
+doi: 10.5281/zenodo.0000000

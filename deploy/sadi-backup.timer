@@ -1,0 +1,12 @@
+[Unit]
+Description=Nightly SADI study backup
+
+[Timer]
+# 02:30 UTC daily, with a spread so it does not collide with anything else.
+OnCalendar=*-*-* 02:30:00 UTC
+RandomizedDelaySec=900
+# Catch up after the VM has been off.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

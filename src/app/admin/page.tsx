@@ -44,30 +44,50 @@ function formatWhen(iso: string | null): string {
   return new Date(iso).toISOString().slice(0, 10);
 }
 
-function LoginScreen({ error }: { error?: string }) {
+function LoginScreen({ error, retry, left }: { error?: string; retry?: string; left?: string }) {
+  const lockedMinutes = Math.max(1, Math.ceil(Number(retry ?? 0) / 60));
+  const locked = error === 'locked';
+
   return (
     <main className="viewport-fill grid place-items-center px-6">
       <form action="/api/admin/login" method="post" className="w-full max-w-sm">
         <h1 className="text-lg font-semibold">Study administration</h1>
-        {error === 'unset' ? (
+
+        {error === 'unset' && (
           <p className="mt-3 rounded-lg border border-amber-900 bg-amber-950/50 p-3 text-sm text-amber-200">
             ADMIN_PASSWORD is not set on the server, so this page cannot be unlocked.
           </p>
-        ) : error ? (
-          <p className="mt-3 text-sm text-amber-300">That password was not correct.</p>
-        ) : null}
+        )}
+        {locked && (
+          <p className="mt-3 rounded-lg border border-amber-900 bg-amber-950/50 p-3 text-sm text-amber-200">
+            Too many incorrect attempts. Try again in {lockedMinutes}{' '}
+            {lockedMinutes === 1 ? 'minute' : 'minutes'}.
+          </p>
+        )}
+        {error === '1' && (
+          <p className="mt-3 text-sm text-amber-300">
+            That password was not correct.
+            {left !== undefined && Number(left) > 0 && (
+              <> {left} {Number(left) === 1 ? 'attempt' : 'attempts'} left before a lockout.</>
+            )}
+          </p>
+        )}
+
         <input
           type="password"
           name="password"
           autoFocus
           required
+          disabled={locked}
           placeholder="Admin password"
           className="mt-4 w-full rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-3 text-base
-                     text-zinc-100 outline-none focus:border-zinc-500"
+                     text-zinc-100 outline-none focus:border-zinc-500 disabled:opacity-50"
         />
         <button
           type="submit"
-          className="mt-3 w-full rounded-lg bg-white px-4 py-3 font-semibold text-zinc-900"
+          disabled={locked}
+          className="mt-3 w-full rounded-lg bg-white px-4 py-3 font-semibold text-zinc-900 disabled:bg-zinc-800
+                     disabled:text-zinc-600"
         >
           Unlock
         </button>
@@ -79,10 +99,10 @@ function LoginScreen({ error }: { error?: string }) {
 export default async function AdminPage({
   searchParams,
 }: {
-  searchParams: Promise<{ error?: string }>;
+  searchParams: Promise<{ error?: string; retry?: string; left?: string }>;
 }) {
-  const { error } = await searchParams;
-  if (!(await isAdmin())) return <LoginScreen error={error} />;
+  const { error, retry, left } = await searchParams;
+  if (!(await isAdmin())) return <LoginScreen error={error} retry={retry} left={left} />;
 
   const db = getDb();
 

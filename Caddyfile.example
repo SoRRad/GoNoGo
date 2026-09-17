@@ -24,13 +24,23 @@ study.example.org {
 		flush_interval -1
 	}
 
+	# A surgeon's access token IS the URL: /a/<token>. Logging that path would
+	# write a working credential into a file that is backed up, rotated and read
+	# by anyone with shell access. These requests are excluded from the log
+	# entirely; every other path is logged with its URI intact.
+	@access_link path /a/*
+	log_skip @access_link
+
 	log {
 		output file /var/log/caddy/study.log
-		# Access tokens travel in the URL path, so do not log full URIs.
+		# Belt and braces: redact the query string on everything that IS logged,
+		# in case a token ever ends up there.
 		format filter {
 			wrap console
 			fields {
-				request>uri delete
+				request>uri query {
+					replace redacted
+				}
 			}
 		}
 	}

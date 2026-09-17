@@ -17,7 +17,8 @@
     "make:dummy": "node scripts/ensure-built.js && node dist/scripts/make-dummy-frames.js",
     "db:reset": "node scripts/ensure-built.js && node dist/scripts/db-reset.js",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:snapshot": "node scripts/ensure-built.js && node dist/scripts/db-snapshot.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",
