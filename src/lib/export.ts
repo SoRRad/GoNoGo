@@ -17,6 +17,10 @@ import {
 import type { RaterMask } from './analysis';
 import { DEFAULT_TOLERANCE_FRACTION } from './boundary';
 import { loadRepeatPairs, summariseIntraRater } from './intra-rater';
+import { makeRng, seededShuffle } from './queue';
+
+/** Fixed, so the suggested split is reproducible from the export alone. */
+const SPLIT_SEED = 0x5A01;
 
 const CSV_COLUMNS = [
   'annotation_id',
@@ -217,6 +221,34 @@ CHANCE-CORRECTED AGREEMENT
 -------------------------------------------------------------------------------
 TABLES
 -------------------------------------------------------------------------------
+
+videos.csv
+    frame_id to source_video, with dimensions. The grouping every split and every
+    cross-validation fold should respect.
+
+splits.csv
+    A SUGGESTED train / validation / test split, 70/15/15, assigned BY VIDEO with
+    a fixed seed so it is reproducible from this archive alone.
+
+    SPLIT BY VIDEO, NOT BY FRAME.
+    Frames taken from one operation are highly correlated: neighbouring stills
+    share anatomy, lighting, camera pose and the same patient. Assigning frames
+    independently puts near-duplicates of a training image into the test set, so
+    a model is scored partly on images it has effectively already seen and the
+    reported performance is optimistic — sometimes dramatically so. Every frame
+    of a video is therefore assigned to exactly one split here.
+
+    Frames with no recorded source_video are each treated as their own group,
+    since pooling them would assert they came from the same operation.
+
+    This split is a default, not a recommendation for any particular analysis.
+
+    CHECK IT BEFORE USING IT. With few videos the proportions cannot be met: at
+    four videos, 15% rounds down to zero and the validation set comes out EMPTY.
+    It is also worth confirming the split did not put all of one surgeon's
+    individual frames on one side. videos.csv has what you need to build your
+    own folds, and grouped k-fold over videos is usually the better choice when
+    the number of operations is small.
 
 annotations.csv
     One row per submitted annotation, with the surgeon and frame metadata
@@ -579,6 +611,63 @@ export function collectExportEntries(
     );
   }
   emit({ name: 'export/presence_agreement.csv', text: presenceLines.join('\n') + '\n' });
+
+  // ---- videos.csv and splits.csv -----------------------------------------
+  // Frames from one operation are highly correlated: adjacent stills share
+  // anatomy, lighting and camera pose. Splitting by frame puts near-duplicates
+  // on both sides of the split, so a model is scored partly on images it has
+  // effectively already seen. Splitting by video is the only honest unit here.
+  const videoRows = ratedFrames.map(({ frame }) => ({
+    frameId: frame.id,
+    sourceVideo: frame.source_video,
+    width: frame.width,
+    height: frame.height,
+    isPractice: frame.is_practice,
+  }));
+
+  emit({
+    name: 'export/videos.csv',
+    text:
+      ['frame_id', 'source_video', 'frame_width', 'frame_height', 'is_practice'].join(',') +
+      '\n' +
+      videoRows
+        .map((row) =>
+          [row.frameId, row.sourceVideo, row.width, row.height, row.isPractice].map(csvCell).join(','),
+        )
+        .join('\n') +
+      '\n',
+  });
+
+  // A frame with no recorded source video gets a group of its own rather than
+  // being pooled with every other unknown frame, which would assert they share
+  // an operation when that is simply not known.
+  const videoKeys = [...new Set(videoRows.map((row) => row.sourceVideo ?? `__unknown_frame_${row.frameId}`))];
+  const shuffledVideos = seededShuffle(videoKeys, makeRng(SPLIT_SEED));
+
+  // 70 / 15 / 15 by video count, rounded so nothing is lost.
+  const trainCount = Math.floor(shuffledVideos.length * 0.7);
+  const validationCount = Math.floor(shuffledVideos.length * 0.15);
+  const splitOf = new Map<string, string>();
+  shuffledVideos.forEach((video, index) => {
+    splitOf.set(
+      video,
+      index < trainCount ? 'train' : index < trainCount + validationCount ? 'validation' : 'test',
+    );
+  });
+
+  emit({
+    name: 'export/splits.csv',
+    text:
+      ['frame_id', 'source_video', 'split'].join(',') +
+      '\n' +
+      videoRows
+        .map((row) => {
+          const key = row.sourceVideo ?? `__unknown_frame_${row.frameId}`;
+          return [row.frameId, row.sourceVideo, splitOf.get(key) ?? 'test'].map(csvCell).join(',');
+        })
+        .join('\n') +
+      '\n',
+  });
 
   emit({
     name: 'export/README.txt',

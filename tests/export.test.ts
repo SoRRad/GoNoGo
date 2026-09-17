@@ -389,3 +389,119 @@ describe('metric tables', () => {
     }
   });
 });
+
+describe('video grouping and splits', () => {
+  /** Frames across several videos, each rated by two surgeons. */
+  function seedVideos(db: ReturnType<typeof testDb>, videos: string[], perVideo: number) {
+    const raters = [addSurgeon(db, 'A'), addSurgeon(db, 'B')];
+    let order = 0;
+    for (const video of videos) {
+      for (let i = 0; i < perVideo; i++) {
+        const frameId = addFrame(db, { width: W, height: H, sourceVideo: video });
+        for (const surgeonId of raters) {
+          const assignment = addAssignment(db, surgeonId, frameId, order++);
+          addAnnotation(db, {
+            assignmentId: assignment,
+            surgeonId,
+            frameId,
+            status: 'drawn',
+            nogoMaskPath: writeMask(frameId, surgeonId, 'nogo', W, H, rect(W, H, 0, 0, 4, 4), assignment),
+          });
+        }
+      }
+    }
+  }
+
+  it('maps every exported frame to its source video', () => {
+    const db = testDb();
+    seedVideos(db, ['case01', 'case02'], 2);
+
+    const { entries } = collect(db);
+    const lines = textOf(entries, 'export/videos.csv').trim().split('\n');
+    const header = parseCsvLine(lines[0]);
+    const rows = lines.slice(1).map(parseCsvLine);
+
+    expect(rows).toHaveLength(4);
+    const videos = new Set(rows.map((row) => row[header.indexOf('source_video')]));
+    expect([...videos].sort()).toEqual(['case01', 'case02']);
+  });
+
+  it('assigns a split by video, never splitting one video across sets', () => {
+    const db = testDb();
+    seedVideos(db, ['case01', 'case02', 'case03', 'case04', 'case05', 'case06'], 3);
+
+    const { entries } = collect(db);
+    const lines = textOf(entries, 'export/splits.csv').trim().split('\n');
+    const header = parseCsvLine(lines[0]);
+    const rows = lines.slice(1).map(parseCsvLine);
+
+    // Every frame of a video must carry the same split, or the split leaks.
+    const splitsByVideo = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const video = row[header.indexOf('source_video')];
+      const split = row[header.indexOf('split')];
+      expect(['train', 'validation', 'test']).toContain(split);
+      const set = splitsByVideo.get(video) ?? new Set<string>();
+      set.add(split);
+      splitsByVideo.set(video, set);
+    }
+    for (const [video, splits] of splitsByVideo) {
+      expect(`${video}:${splits.size}`).toBe(`${video}:1`);
+    }
+    expect(splitsByVideo.size).toBe(6);
+  });
+
+  it('is reproducible, so the same archive always yields the same split', () => {
+    const build = () => {
+      const db = testDb();
+      seedVideos(db, ['case01', 'case02', 'case03', 'case04'], 2);
+      const { entries } = collect(db);
+      return textOf(entries, 'export/splits.csv')
+        .trim()
+        .split('\n')
+        .slice(1)
+        .map((line) => parseCsvLine(line).slice(1).join(':'));
+    };
+    expect(build()).toEqual(build());
+  });
+
+  it('gives a frame of unknown provenance its own group', () => {
+    const db = testDb();
+    seedVideos(db, ['case01'], 1);
+    // Two frames with no source video must not be forced into the same split
+    // by being treated as one pseudo-video.
+    const raters = [addSurgeon(db, 'C'), addSurgeon(db, 'D')];
+    let order = 100;
+    for (let i = 0; i < 2; i++) {
+      const frameId = addFrame(db, { width: W, height: H, sourceVideo: null });
+      for (const surgeonId of raters) {
+        const assignment = addAssignment(db, surgeonId, frameId, order++);
+        addAnnotation(db, {
+          assignmentId: assignment,
+          surgeonId,
+          frameId,
+          status: 'drawn',
+          nogoMaskPath: writeMask(frameId, surgeonId, 'nogo', W, H, rect(W, H, 0, 0, 4, 4), assignment),
+        });
+      }
+    }
+
+    const { entries } = collect(db);
+    const lines = textOf(entries, 'export/splits.csv').trim().split('\n');
+    expect(lines).toHaveLength(4); // header + 3 frames
+    // They are separate groups, so they may land in different splits; what
+    // matters is that the file has a row for each and never crashes.
+    const header = parseCsvLine(lines[0]);
+    const blanks = lines.slice(1).map(parseCsvLine).filter((row) => row[header.indexOf('source_video')] === '');
+    expect(blanks).toHaveLength(2);
+  });
+
+  it('warns about leakage in the README', () => {
+    const db = testDb();
+    const { entries } = collect(db);
+    const readme = textOf(entries, 'export/README.txt');
+    expect(readme).toContain('SPLIT BY VIDEO, NOT BY FRAME');
+    expect(readme).toContain('videos.csv');
+    expect(readme).toContain('splits.csv');
+  });
+});

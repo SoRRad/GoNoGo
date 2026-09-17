@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "archiver": "^7.0.1",
-    "better-sqlite3": "^13.0.3",
+    "better-sqlite3": "13.0.3",
     "image-size": "^2.0.4",
     "jpeg-js": "^0.4.4",
     "next": "15.5.25",

@@ -32,6 +32,9 @@ const VIDEO_CONCENTRATION_WARNING = 0.3;
 
 function main() {
   const reset = process.argv.includes('--reset');
+  // For the real study run: refuse to build undersized queues rather than
+  // quietly reducing statistical power.
+  const strict = process.argv.includes('--strict');
   ensureDataDirs();
   const db = getDb();
 
@@ -117,10 +120,21 @@ function main() {
   if (warnings.length > 0) {
     console.log('');
     console.log('  ' + '='.repeat(72));
+    if (strict) {
+      console.log('  REFUSING TO BUILD: the frame pool is smaller than the protocol calls for.');
+      for (const warning of warnings) console.log(`    - ${warning}`);
+      console.log('');
+      console.log('  --strict was given, so no queues were built and nothing was changed.');
+      console.log('  Load more frames and run again, or drop --strict to accept reduced');
+      console.log('  statistical power deliberately.');
+      console.log('  ' + '='.repeat(72));
+      process.exit(1);
+    }
     console.log('  WARNING: the frame pool is smaller than the protocol calls for.');
     console.log('  Queues were scaled down to fit. Statistical power will be reduced.');
     for (const warning of warnings) console.log(`    - ${warning}`);
     console.log('  Load more frames and re-run with --reset to build full-size queues.');
+    console.log('  Use --strict to refuse instead of scaling down.');
     console.log('  ' + '='.repeat(72));
     console.log('');
   }

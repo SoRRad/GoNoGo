@@ -72,10 +72,24 @@ export async function POST(request: Request) {
     try {
       mask = occupancyFromUploadedPng(buffer);
     } catch {
+      // Unreadable upload: drop any mask already on disk rather than leaving a
+      // file the database no longer points at.
+      console.warn(
+        `[sadi] undecodable ${layer} mask upload for assignment ${assignmentId}, frame ${frame.id}`,
+      );
+      await fs.promises.rm(absolute, { force: true });
       return null;
     }
     if (mask.width !== frame.width || mask.height !== frame.height) {
       // Masks must line up with the frame pixel for pixel or they are useless.
+      // Returning null here nulls the database column, so any file already at
+      // this path would become an orphan: remove it in the same breath.
+      console.warn(
+        `[sadi] ${layer} mask upload for assignment ${assignmentId} was ` +
+          `${mask.width}x${mask.height} but frame ${frame.id} is ${frame.width}x${frame.height}; ` +
+          'discarded. This means the client drew at the wrong resolution.',
+      );
+      await fs.promises.rm(absolute, { force: true });
       return null;
     }
     if (isEmpty(mask.data)) {

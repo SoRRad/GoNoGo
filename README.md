@@ -108,9 +108,23 @@ Builds one queue per surgeon:
 Order is shuffled independently per surgeon; practice frames stay first. A full-size queue is
 137 frames.
 
+Individual frames are dealt across source videos rather than in contiguous
+blocks. Frame ids follow ingest order, which follows video order, so a naive
+slice would give each surgeon their own patient and confound surgeon identity
+with case. The script reports how many distinct videos each surgeon's set spans
+and warns if any single video contributes more than 30% of it.
+
 Surgeons who already have a queue are skipped, so adding a late participant never disturbs anyone's
 work — and they still receive the same core set everyone else got. `-- --reset` rebuilds queues for
 surgeons who have not submitted anything yet; it refuses to touch a surgeon who has.
+
+**For the real study run, use `-- --strict`.** It refuses to build undersized
+queues instead of scaling them down, so a missing batch of frames stops the
+setup rather than quietly halving the study's power:
+
+```bash
+npm run assign -- --strict
+```
 
 **If the frame pool is too small**, queues are scaled down to fit and the script prints a loud
 warning naming exactly how many frames are missing. It never fails silently. A full-size study needs
@@ -139,6 +153,8 @@ export/
   repeats/<frame_id>__<surgeon_id>__<assignment_id>__nogo.png
   consensus/<frame_id>__go_majority.png        pixel majority vote
   consensus/<frame_id>__nogo_majority.png
+  videos.csv               frame_id to source_video: the grouping splits must respect
+  splits.csv               suggested 70/15/15 train/validation/test, assigned BY VIDEO
   annotations.csv          every annotation column plus surgeon and frame metadata
   frame_agreement.csv      inter-rater agreement, one row per frame per layer
   intra_rater_pairs.csv    each hidden repeat against its first showing
@@ -161,6 +177,16 @@ received a frame as a hidden repeat has two submitted annotations for it.
 (`is_repeat = 0`); the second appears in `repeats/` and the intra-rater tables.
 Counting both would weight that surgeon twice in the majority vote and pair them
 with themselves in the agreement statistics.
+
+**Split by video, not by frame.** Frames from one operation share anatomy,
+lighting, camera pose and patient. Assigning frames independently puts
+near-duplicates of a training image into the test set, so a model is scored
+partly on images it has effectively already seen. `splits.csv` assigns whole
+videos, with a fixed seed, and `videos.csv` gives you the grouping to build your
+own folds. Check it before using it: with few videos the proportions cannot be
+met — at four videos, 15% rounds down and the validation set comes out empty.
+Grouped k-fold over videos is usually better when the number of operations is
+small.
 
 `README.txt` inside the archive states all of this too, so the export is
 self-describing.
