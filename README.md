@@ -47,7 +47,11 @@ annotation screen — and around keeping every surgeon's judgement independent o
 
 ## Quick start, locally
 
+Requires **Node 22.12 or newer** (`better-sqlite3` needs >= 22, Vitest >= 22.12).
+`npm install` refuses to run on anything older and says so.
+
 ```bash
+node --version    # must be >= 22.12
 npm install
 cp .env.example .env.local        # then edit ADMIN_PASSWORD and SESSION_SECRET
 
@@ -487,9 +491,10 @@ The database and masks live on the mounted disk, untouched by a rebuild.
 Tick every line before a real surgeon is sent a link. Each is something that has
 silently failed for somebody else.
 
-- [ ] **Docker image built and run.** `docker compose up -d --build`, then
-      `docker compose ps` shows `healthy`. Never exercised in development — see
-      Testing below.
+- [ ] **Docker image built and run on this host.** `docker compose up -d --build`,
+      then `docker compose ps` shows `healthy`. CI builds and smoke tests the
+      image on every push, but it has never run on your VM with your disk
+      mounted and your environment file.
 - [ ] **iPad tested, finger and pencil.** `/canvas-lab` first, then a real frame
       through a real access link. Lasso must not lag and the page must not
       scroll under the hand.
@@ -525,6 +530,7 @@ silently failed for somebody else.
 
 ## How it is built
 
+- **Node 22 LTS**, enforced by `engines` plus `engine-strict`.
 - **Next.js 15** (App Router, TypeScript) and **Tailwind**.
 - **SQLite** through `better-sqlite3`, in WAL mode. No external database service.
 - **Masks as PNG files on disk**, never as blobs in the database. The database stores paths.
@@ -569,15 +575,29 @@ A frame the surgeon has not touched never creates a row.
 
 ## Testing
 
+**Node 22.12 or newer is required.** `better-sqlite3` declares `engines.node >= 22`
+and Vitest needs `>= 22.12`, and `.npmrc` sets `engine-strict`, so an older Node
+fails at `npm install` with a clear `EBADENGINE` naming the version rather than
+crashing partway through a native build. Node 20 is past end of life.
+
 ```bash
-npm test          # Vitest: queue, masks, analysis, export
+npm test          # Vitest: queue, masks, analysis, export, boundary, statistics
 npm run typecheck # both the app and the CLI scripts
 npm run lint
 npm run build
+
+./scripts/smoke-container.sh   # builds the image and drives the container
 ```
 
-`.github/workflows/ci.yml` runs all four on every push and pull request, on Node 20
-to match the image.
+`.github/workflows/ci.yml` runs two jobs on every push and pull request:
+
+- **check** — typecheck, lint, test and build on Node 22, matching the image.
+- **container** — builds the production image, starts it, and drives the whole
+  pipeline through the running container: seed frames, seed surgeons, build
+  queues, sign in with an access link, submit an annotation through the HTTP
+  API, verify the stored mask is binary at native resolution, export the study,
+  and wait for Docker's own HEALTHCHECK to report healthy. A green badge that
+  does not cover the image is not worth much.
 
 The suite covers the pure logic, with no browser and no fixtures beyond an
 in-memory SQLite database built from the real schema:
@@ -599,11 +619,6 @@ in-memory SQLite database built from the real schema:
 Beyond the suite, the browser behaviour was exercised by driving a real Chromium:
 the full surgeon flow including resume-after-reload and one-step-back, admin
 access control, and pointer input with finger, pen and palm rejection.
-
-**Not yet done:** the Docker image has not been built and run — this was
-developed in a sandbox with a Docker CLI but no daemon. `docker compose config`
-validates and the production build and server were exercised directly, but please
-run `docker compose up -d --build` once before the study opens.
 
 **Still required before the study opens:** test on the real iPad, with a finger
 and with the pencil, on `/canvas-lab` first and then on a real frame. Emulated

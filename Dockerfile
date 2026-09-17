@@ -1,15 +1,20 @@
-# syntax=docker/dockerfile:1
+# No `# syntax=` directive on purpose: it makes BuildKit fetch its frontend
+# image from Docker Hub before the build starts, which fails on any host behind
+# a restrictive egress policy. Nothing here needs a newer frontend than the one
+# built into the daemon.
 
 # --------------------------------------------------------------------------
 # Build stage: needs a toolchain because better-sqlite3 is a native addon.
 # --------------------------------------------------------------------------
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-COPY package.json package-lock.json ./
+# .npmrc carries engine-strict, so an unsupported Node fails here with a clear
+# EBADENGINE naming the required version, instead of crashing mid-gyp-build.
+COPY package.json package-lock.json .npmrc ./
 RUN npm ci
 
 COPY . .
@@ -27,7 +32,7 @@ RUN npm prune --omit=dev
 # --------------------------------------------------------------------------
 # Runtime stage.
 # --------------------------------------------------------------------------
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 # libstdc++ is what the compiled better-sqlite3 binary links against.
 RUN apk add --no-cache libstdc++ tini

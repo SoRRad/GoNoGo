@@ -12,10 +12,11 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    # Matches the node:20-alpine base image the application ships on.
+    # Matches the node:22-alpine base image the application ships on.
+    # better-sqlite3 requires node >=22 and vitest >=22.12, so 20 cannot install.
     strategy:
       matrix:
-        node-version: ['20.x']
+        node-version: ['22.x']
 
     steps:
       - uses: actions/checkout@v4
@@ -49,3 +50,20 @@ jobs:
           # Build-time only; the real values come from the environment at runtime.
           SESSION_SECRET: ci-placeholder-secret-not-used-at-runtime
           ADMIN_PASSWORD: ci-placeholder
+
+  # The check job says nothing about whether the image builds or the container
+  # boots, and those are the two things that fail on deployment day. This job
+  # builds the real production image and drives the whole study pipeline
+  # through the running container.
+  container:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image and smoke test the container
+        run: ./scripts/smoke-container.sh
+
+      - name: Container logs on failure
+        if: failure()
+        run: docker ps -a --filter name=sadi-smoke --format '{{.Names}}' | xargs -r -n1 docker logs --tail 100

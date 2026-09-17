@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "description": "SADI Go/No-Go dissection zone annotation platform",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
