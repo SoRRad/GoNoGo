@@ -593,11 +593,32 @@ npm run build
 
 - **check** — typecheck, lint, test and build on Node 22, matching the image.
 - **container** — builds the production image, starts it, and drives the whole
-  pipeline through the running container: seed frames, seed surgeons, build
-  queues, sign in with an access link, submit an annotation through the HTTP
-  API, verify the stored mask is binary at native resolution, export the study,
-  and wait for Docker's own HEALTHCHECK to report healthy. A green badge that
-  does not cover the image is not worth much.
+  pipeline through the running container. A green badge that does not cover the
+  image is not worth much.
+
+The container job runs a full miniature study rather than a single annotation,
+because the paths most likely to break are the ones that need more than one
+opinion:
+
+- Both surgeons sign in with their access links, onboard, and work their entire
+  queue over the HTTP API. Writes are gated to the queue's current position, so
+  a repeat sitting 30-odd places after its first showing is reached by actually
+  annotating the frames in between.
+- On a frame they both drew, the two masks are deliberately offset to overlap on
+  exactly half their width. The export must then report IoU 1/3 and Dice 1/2 and
+  write a consensus mask covering precisely the intersection — the numbers the
+  geometry implies, not merely "a number".
+- On another shared frame one surgeon draws and the other marks nothing. That
+  surgeon has to survive as an all-zero vote: two raters, one marked, the pair
+  still compared, and a score of 0 rather than a blank cell.
+- A repeat is driven through the API and both showings must land as separate
+  files keyed by assignment id, ship separately in the archive, and produce a
+  real intra-rater metric. Reverting the assignment-keyed mask path makes this
+  fail with `IoU 1.0000` — a repeat agreeing perfectly with itself, which is
+  what that bug did to reliability figures before it was fixed.
+
+`scripts/smoke/` holds the helpers it copies into the running container. The
+whole run takes about a minute.
 
 The suite covers the pure logic, with no browser and no fixtures beyond an
 in-memory SQLite database built from the real schema:

@@ -21,6 +21,13 @@ const config = [
     files: ['scripts/ensure-built.js'],
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
+  {
+    // Smoke-test helpers. They are copied into the running container and run by
+    // its node against the image's own node_modules, so they are CommonJS and
+    // never part of the build.
+    files: ['scripts/smoke/**/*.cjs'],
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
+  },
 ];
 
 export default config;

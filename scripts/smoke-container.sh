@@ -2,7 +2,13 @@
 #
 # Builds the production image, starts it, and drives the whole study pipeline
 # through the running container: seed frames, seed surgeons, build queues,
-# submit an annotation through the real HTTP API, and export.
+# annotate through the real HTTP API with both surgeons, and export.
+#
+# The two paths most likely to break in a real study are covered end to end:
+# agreement between surgeons on a frame they both saw, and the hidden repeats
+# a surgeon is shown twice. Writes are gated to the queue's current position,
+# so a repeat sitting 30+ places later is reached by actually annotating the
+# frames in between, not by reaching into the database.
 #
 #   ./scripts/smoke-container.sh
 #
@@ -28,8 +34,44 @@ DATA_DIR="$(mktemp -d)"
 BASE="http://127.0.0.1:${PORT}"
 COOKIES="${DATA_DIR}/cookies.txt"
 
-# The image runs as uid 1001; a bind mount keeps the host's ownership.
-chown -R 1001:1001 "${DATA_DIR}" 2>/dev/null || sudo chown -R 1001:1001 "${DATA_DIR}"
+# Set when the data directory could only be handed over via sudo, so cleanup
+# can remove it the same way.
+SUDO=""
+
+# The image runs as uid 1001 and mounts DATA_DIR at /data; a bind mount keeps
+# the host's ownership, so the directory has to be handed over before the
+# container starts. That needs root, which not every machine grants silently.
+prepare_data_dir() {
+  if chown -R 1001:1001 "${DATA_DIR}" 2>/dev/null; then
+    return 0
+  fi
+
+  local reason
+  if ! command -v sudo >/dev/null 2>&1; then
+    reason="sudo is not installed"
+  elif ! sudo -n true 2>/dev/null; then
+    reason="sudo would prompt for a password"
+  elif sudo -n chown -R 1001:1001 "${DATA_DIR}" 2>/dev/null; then
+    SUDO="sudo -n"
+    return 0
+  else
+    reason="sudo is available but the chown still failed"
+  fi
+
+  cat >&2 <<MESSAGE
+FAIL: cannot give ${DATA_DIR} to uid 1001 (${reason}).
+
+The container runs as uid 1001 and mounts that directory at /data, so it must
+belong to 1001 before the container starts. Changing the owner needs root.
+
+Run this script as root, or from an account with passwordless sudo. Both hold
+on a GitHub Actions runner, so this is usually a developer machine where sudo
+prompts for a password: re-run it under sudo.
+MESSAGE
+  exit 1
+}
+
+prepare_data_dir
 
 cleanup() {
   local status=$?
@@ -40,7 +82,7 @@ cleanup() {
       docker logs "${CONTAINER}" 2>&1 | tail -40 || true
     fi
     docker rm -f "${CONTAINER}" >/dev/null 2>&1 || true
-    rm -rf "${DATA_DIR}" 2>/dev/null || sudo rm -rf "${DATA_DIR}" || true
+    rm -rf "${DATA_DIR}" 2>/dev/null || ${SUDO} rm -rf "${DATA_DIR}" 2>/dev/null || true
   else
     echo "KEEP=1: container ${CONTAINER}, data ${DATA_DIR}"
   fi
@@ -88,7 +130,11 @@ echo "${health}"
 # ------------------------------------------------------------------- pipeline
 
 step "Seed dummy frames"
-docker exec "${CONTAINER}" npm run --silent make:dummy -- /data/incoming 24
+# 34 study frames, not a handful: queue.ts only weaves in a repeat when the
+# queue is longer than MIN_REPEAT_GAP (30), and without one the intra-rater
+# checks below would pass vacuously. With the pool under CORE_TARGET (50)
+# every study frame is a core frame, so both surgeons see all of them.
+docker exec "${CONTAINER}" npm run --silent make:dummy -- /data/incoming 34
 docker exec "${CONTAINER}" npm run --silent seed:frames -- /data/incoming
 
 step "Health turns ok once frames exist"
@@ -198,6 +244,25 @@ AFTER="$(curl -s -b "${COOKIES}" "${BASE}/api/queue" | node -pe 'JSON.parse(requ
 [[ "${AFTER}" == "1" ]] || fail "expected the queue to advance to index 1, got ${AFTER}"
 echo "currentIndex is now ${AFTER}"
 
+# ------------------------------------------------- the whole cohort, end to end
+# Everything above is one annotation from one surgeon, which says nothing about
+# agreement or repeats. The helpers live in scripts/smoke/ rather than inline
+# here because they do real work: choosing frames, driving ~40 submissions per
+# surgeon, and reading the exported archive back.
+
+step "Copy the smoke helpers into the container"
+docker cp scripts/smoke "${CONTAINER}:/app/"
+echo "scripts/smoke -> /app/smoke"
+
+step "Choose the frames to disagree on, and draw the masks"
+docker exec "${CONTAINER}" node /app/smoke/plan.cjs
+
+step "Both surgeons work their whole queue"
+docker exec "${CONTAINER}" node /app/smoke/drive.cjs
+
+step "What landed on disk"
+docker exec "${CONTAINER}" node /app/smoke/check-disk.cjs
+
 # ---------------------------------------------------------------- export
 
 step "Export the study"
@@ -221,11 +286,17 @@ NAMES="$(docker exec "${CONTAINER}" node -e "
   }
   process.stdout.write(names.join('\n'));
 ")"
-for expected in "export/annotations.csv" "export/README.txt" "export/frame_agreement.csv" "export/videos.csv" "export/splits.csv" "export/frames/" "export/masks/"; do
+for expected in "export/annotations.csv" "export/README.txt" "export/frame_agreement.csv" \
+                "export/intra_rater_pairs.csv" "export/intra_rater_summary.csv" \
+                "export/presence_agreement.csv" "export/videos.csv" "export/splits.csv" \
+                "export/frames/" "export/masks/" "export/consensus/" "export/repeats/"; do
   echo "${NAMES}" | grep -q "${expected}" || fail "export is missing ${expected}"
 done
 echo "${NAMES}" | tr ' ' '\n' | sed 's/^/  /' | head -12
 echo "  ... $(echo "${NAMES}" | wc -l) entries total"
+
+step "The statistics in the export"
+docker exec "${CONTAINER}" node /app/smoke/check-export.cjs
 
 step "Admin is reachable and gated"
 admin_code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin")"
