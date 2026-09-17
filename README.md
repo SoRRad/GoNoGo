@@ -32,7 +32,16 @@ annotation screen — and around keeping every surgeon's judgement independent o
   frame and the one before it.
 - **The timer is never shown**, and it pauses whenever the tab is not in front.
 - **Nothing is fetched from a third party.** No webfonts, no CDN, no analytics. Next.js telemetry
-  is disabled in the image and in the repo.
+  is disabled in the image and in the repo, and the Content Security Policy pins every source to
+  this origin.
+- **Access tokens stay out of logs.** A surgeon's link is a working credential, so
+  `Referrer-Policy: no-referrer` stops the browser leaking it to anywhere the page navigates, and
+  the Caddy config excludes `/a/*` from the access log entirely.
+- **The admin password cannot be guessed at leisure.** Five failed attempts from an address earns a
+  fifteen minute lockout, checked before the password is. Failures are logged with a timestamp; the
+  password never is.
+- **Statistics never lie by convention.** An undefined agreement figure is reported as empty with a
+  reason, never as `NaN` and never as a flattering 1.
 
 ---
 
