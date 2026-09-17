@@ -120,6 +120,70 @@ describe('loadRaters', () => {
   });
 });
 
+describe('repeats must not contaminate inter-rater analysis', () => {
+  it('counts a surgeon once even when they also got the frame as a repeat', () => {
+    const db = testDb();
+    const frameId = addFrame(db, { width: W, height: H });
+    const solo = addSurgeon(db, 'Solo');
+    const repeater = addSurgeon(db, 'Repeater');
+
+    const soloAssignment = addAssignment(db, solo, frameId, 0);
+    addAnnotation(db, {
+      assignmentId: soloAssignment,
+      surgeonId: solo,
+      frameId,
+      status: 'drawn',
+      nogoMaskPath: writeMask(frameId, solo, 'nogo', W, H, rect(W, H, 0, 0, 4, 8), soloAssignment),
+    });
+
+    const first = addAssignment(db, repeater, frameId, 1);
+    const repeat = addAssignment(db, repeater, frameId, 40, { isRepeat: 1, repeatOf: first });
+    for (const assignmentId of [first, repeat]) {
+      addAnnotation(db, {
+        assignmentId,
+        surgeonId: repeater,
+        frameId,
+        status: 'drawn',
+        nogoMaskPath: writeMask(frameId, repeater, 'nogo', W, H, rect(W, H, 0, 0, 4, 8), assignmentId),
+      });
+    }
+
+    const { nogo } = loadRaters(db, frameId, W, H);
+    // Two surgeons rated this frame, not three opinions.
+    expect(nogo).toHaveLength(2);
+    expect(nogo.map((rater) => rater.surgeonId).sort()).toEqual([solo, repeater].sort());
+    expect(new Set(nogo.map((rater) => rater.surgeonId)).size).toBe(nogo.length);
+  });
+
+  it('uses the first showing, not the repeat', () => {
+    const db = testDb();
+    const frameId = addFrame(db, { width: W, height: H });
+    const surgeonId = addSurgeon(db, 'ChangedMind');
+
+    const first = addAssignment(db, surgeonId, frameId, 0);
+    const repeat = addAssignment(db, surgeonId, frameId, 40, { isRepeat: 1, repeatOf: first });
+    // 32 px on the first showing, 8 px on the repeat.
+    addAnnotation(db, {
+      assignmentId: first,
+      surgeonId,
+      frameId,
+      status: 'drawn',
+      nogoMaskPath: writeMask(frameId, surgeonId, 'nogo', W, H, rect(W, H, 0, 0, 4, 8), first),
+    });
+    addAnnotation(db, {
+      assignmentId: repeat,
+      surgeonId,
+      frameId,
+      status: 'drawn',
+      nogoMaskPath: writeMask(frameId, surgeonId, 'nogo', W, H, rect(W, H, 0, 0, 2, 4), repeat),
+    });
+
+    const { nogo } = loadRaters(db, frameId, W, H);
+    expect(nogo).toHaveLength(1);
+    expect(nogo[0].painted).toBe(32);
+  });
+});
+
 describe('frameAgreement', () => {
   it('summarises both layers and lists every rater', () => {
     const db = testDb();

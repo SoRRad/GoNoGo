@@ -59,7 +59,7 @@ export async function POST(request: Request) {
    * disk, so erasing everything and saving really does leave nothing behind.
    */
   const storeLayer = async (layer: Layer): Promise<string | null> => {
-    const absolute = maskPath(frame.id, surgeon.id, layer);
+    const absolute = maskPath(frame.id, surgeon.id, assignmentId, layer);
     const uploaded = form.get(layer);
 
     if (!(uploaded instanceof File) || uploaded.size === 0) {

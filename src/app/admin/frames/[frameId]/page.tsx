@@ -5,44 +5,90 @@ import type { Frame } from '@/lib/db';
 import { frameAgreement } from '@/lib/analysis';
 import { isAdmin } from '@/server/auth';
 import AdminOverlay from '@/components/AdminOverlay';
-import type { AgreementSummary } from '@/lib/masks';
+import type { LayerAgreement } from '@/lib/analysis';
 
 export const dynamic = 'force-dynamic';
 
-function percent(value: number): string {
-  return `${(value * 100).toFixed(1)}%`;
+function percent(value: number | null): string {
+  // Null is a real answer here: the metric is undefined, not zero.
+  return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
 }
 
-function AgreementCard({ title, colour, summary }: { title: string; colour: string; summary: AgreementSummary }) {
+function Row({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="flex justify-between gap-4">
+      <dt className="text-zinc-500" title={hint}>
+        {label}
+      </dt>
+      <dd className="tabular-nums text-zinc-100">{value}</dd>
+    </div>
+  );
+}
+
+function AgreementCard({ title, colour, summary }: { title: string; colour: string; summary: LayerAgreement }) {
+  const { presence } = summary;
   return (
     <div className="rounded-lg border border-zinc-800 p-4">
       <h3 className="flex items-center gap-2 text-sm font-medium text-zinc-200">
         <span className="inline-block h-2.5 w-2.5 rounded-sm" style={{ background: colour }} />
         {title}
       </h3>
+
       {summary.n < 2 ? (
         <p className="mt-3 text-sm text-zinc-500">
           {summary.n === 0 ? 'No opinions yet.' : 'Only one opinion — agreement needs at least two.'}
         </p>
       ) : (
-        <dl className="mt-3 space-y-2 text-sm">
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Pixel agreement</dt>
-            <dd className="tabular-nums text-zinc-100">{percent(summary.meanPixelAgreement)}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Overlap (mean IoU)</dt>
-            <dd className="tabular-nums text-zinc-100">{percent(summary.meanIou)}</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Majority-vote area</dt>
-            <dd className="tabular-nums text-zinc-300">{summary.consensusPixels.toLocaleString()} px</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-zinc-500">Surgeons</dt>
-            <dd className="tabular-nums text-zinc-300">{summary.n}</dd>
-          </div>
-        </dl>
+        <>
+          <p className="mt-3 text-[11px] uppercase tracking-wide text-zinc-600">Presence</p>
+          <dl className="mt-1.5 space-y-2 text-sm">
+            <Row
+              label="Marked a zone"
+              value={`${presence.positive} of ${presence.n}`}
+              hint="How many surgeons marked any pixel of this class at all."
+            />
+            <Row
+              label="Agreed it exists"
+              value={percent(presence.observedAgreement)}
+              hint="Share of surgeon pairs making the same yes/no call on this frame."
+            />
+          </dl>
+
+          <p className="mt-4 text-[11px] uppercase tracking-wide text-zinc-600">Shape</p>
+          {summary.spatialPairs === 0 ? (
+            <p className="mt-1.5 text-sm text-zinc-500">
+              Nobody drew this class, so there is no shape to compare.
+            </p>
+          ) : (
+            <dl className="mt-1.5 space-y-2 text-sm">
+              <Row label="Overlap (IoU)" value={percent(summary.meanIou)} hint="Mean pairwise intersection over union." />
+              <Row label="Overlap (Dice)" value={percent(summary.meanDice)} hint="Mean pairwise Dice / F1." />
+              <Row
+                label="Boundary (NSD)"
+                value={percent(summary.boundary.meanNsd)}
+                hint={`Share of each contour within ${summary.boundary.tolerancePixels.toFixed(1)} px of the other.`}
+              />
+              <Row
+                label="Pixel agreement"
+                value={percent(summary.meanPixelAgreement)}
+                hint="Whole-image, so background inflates it on a sparse frame."
+              />
+            </dl>
+          )}
+
+          <dl className="mt-4 space-y-2 border-t border-zinc-800 pt-3 text-sm">
+            <Row label="Majority-vote area" value={`${summary.consensusPixels.toLocaleString()} px`} />
+            <Row
+              label="Pairs compared"
+              value={
+                summary.excludedEmptyPairs > 0
+                  ? `${summary.spatialPairs} (+${summary.excludedEmptyPairs} both empty)`
+                  : String(summary.spatialPairs)
+              }
+              hint="Pairs where neither surgeon drew anything are excluded: overlap is undefined, not perfect."
+            />
+          </dl>
+        </>
       )}
     </div>
   );

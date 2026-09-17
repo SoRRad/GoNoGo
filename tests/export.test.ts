@@ -247,3 +247,145 @@ describe('export README', () => {
     for (const column of header) expect(readme).toContain(column);
   });
 });
+
+describe('metric tables', () => {
+  it('writes one frame_agreement row per layer, with the exclusion counts', () => {
+    const db = testDb();
+    const frameId = addFrame(db, { width: W, height: H });
+
+    // Two surgeons draw No-Go; neither draws Go.
+    const ids = [0, 1].map((index) => {
+      const surgeonId = addSurgeon(db, `Rater${index}`);
+      const assignment = addAssignment(db, surgeonId, frameId, index);
+      addAnnotation(db, {
+        assignmentId: assignment,
+        surgeonId,
+        frameId,
+        status: 'drawn',
+        nogoMaskPath: writeMask(frameId, surgeonId, 'nogo', W, H, rect(W, H, index, 0, 4 + index, 8)),
+      });
+      return surgeonId;
+    });
+    expect(ids).toHaveLength(2);
+
+    const { entries, stats } = collect(db);
+    const lines = textOf(entries, 'export/frame_agreement.csv').trim().split('\n');
+    const header = parseCsvLine(lines[0]);
+    expect(stats.agreementRows).toBe(2);
+
+    const rows = lines.slice(1).map(parseCsvLine);
+    const nogoRow = rows.find((row) => row[header.indexOf('layer')] === 'nogo')!;
+    const goRow = rows.find((row) => row[header.indexOf('layer')] === 'go')!;
+
+    // No-Go: one usable pair, nothing excluded.
+    expect(nogoRow[header.indexOf('spatial_pairs')]).toBe('1');
+    expect(nogoRow[header.indexOf('excluded_empty_pairs')]).toBe('0');
+    expect(Number(nogoRow[header.indexOf('mean_iou')])).toBeGreaterThan(0);
+    expect(Number(nogoRow[header.indexOf('nsd_tolerance_px')])).toBeGreaterThan(0);
+
+    // Go: nobody drew, so the one pair is excluded and the metrics are empty.
+    expect(goRow[header.indexOf('spatial_pairs')]).toBe('0');
+    expect(goRow[header.indexOf('excluded_empty_pairs')]).toBe('1');
+    expect(goRow[header.indexOf('mean_iou')]).toBe('');
+    expect(goRow[header.indexOf('mean_dice')]).toBe('');
+    // But they unanimously agree nothing is there.
+    expect(goRow[header.indexOf('presence_observed_agreement')]).toBe('1');
+  });
+
+  it('writes intra-rater tables for a completed repeat pair', () => {
+    const db = testDb();
+    const frameId = addFrame(db, { width: W, height: H });
+    const surgeonId = addSurgeon(db, 'Repeater');
+
+    const first = addAssignment(db, surgeonId, frameId, 0);
+    const repeat = addAssignment(db, surgeonId, frameId, 40, { isRepeat: 1, repeatOf: first });
+    addAnnotation(db, {
+      assignmentId: first,
+      surgeonId,
+      frameId,
+      status: 'drawn',
+      confidence: 'high',
+      nogoMaskPath: writeMask(frameId, surgeonId, 'nogo', W, H, rect(W, H, 0, 0, 4, 8)),
+    });
+    addAnnotation(db, {
+      assignmentId: repeat,
+      surgeonId,
+      frameId,
+      status: 'drawn',
+      confidence: 'low',
+      nogoMaskPath: writeMask(frameId, surgeonId + 500, 'nogo', W, H, rect(W, H, 0, 0, 4, 8)),
+    });
+
+    const { entries, stats } = collect(db);
+    expect(stats.repeatPairs).toBe(1);
+
+    const pairLines = textOf(entries, 'export/intra_rater_pairs.csv').trim().split('\n');
+    const pairHeader = parseCsvLine(pairLines[0]);
+    const nogoPair = pairLines.slice(1).map(parseCsvLine).find((row) => row[pairHeader.indexOf('layer')] === 'nogo')!;
+
+    expect(nogoPair[pairHeader.indexOf('queue_gap')]).toBe('40');
+    expect(nogoPair[pairHeader.indexOf('iou')]).toBe('1');
+    expect(nogoPair[pairHeader.indexOf('first_confidence')]).toBe('high');
+    expect(nogoPair[pairHeader.indexOf('repeat_confidence')]).toBe('low');
+
+    const summaryLines = textOf(entries, 'export/intra_rater_summary.csv').trim().split('\n');
+    const summaryHeader = parseCsvLine(summaryLines[0]);
+    const nogoSummary = summaryLines
+      .slice(1)
+      .map(parseCsvLine)
+      .find((row) => row[summaryHeader.indexOf('layer')] === 'nogo')!;
+    expect(nogoSummary[summaryHeader.indexOf('repeat_pairs')]).toBe('1');
+    expect(nogoSummary[summaryHeader.indexOf('confidence_changes')]).toBe('1');
+    // One item cannot support a kappa, and the note says so rather than NaN.
+    expect(nogoSummary[summaryHeader.indexOf('presence_kappa')]).toBe('');
+    expect(nogoSummary[summaryHeader.indexOf('presence_kappa_note')]).not.toBe('');
+  });
+
+  it('never writes NaN into any table', () => {
+    const db = testDb();
+    const frameId = addFrame(db, { width: W, height: H });
+    // Everyone abstains: the degenerate case that produces 0/0 everywhere.
+    for (const index of [0, 1, 2]) {
+      const surgeonId = addSurgeon(db, `Abstain${index}`);
+      const assignment = addAssignment(db, surgeonId, frameId, index);
+      addAnnotation(db, { assignmentId: assignment, surgeonId, frameId, status: 'nothing_to_mark' });
+    }
+
+    const { entries } = collect(db);
+    for (const entry of entries) {
+      if (!('text' in entry) || !entry.name.endsWith('.csv')) continue;
+      // Checked cell by cell: 'undefined_unanimous' is a legitimate note value,
+      // a bare 'undefined' or 'NaN' in a numeric cell is not.
+      for (const line of entry.text.trim().split('\n')) {
+        for (const cell of parseCsvLine(line)) {
+          expect(['NaN', 'Infinity', '-Infinity', 'undefined', 'null']).not.toContain(cell);
+        }
+      }
+    }
+
+    // An undefined metric is written as an empty cell, not a placeholder.
+    const presence = textOf(entries, 'export/presence_agreement.csv').trim().split('\n');
+    const header = parseCsvLine(presence[0]);
+    const row = parseCsvLine(presence[1]);
+    expect(row[header.indexOf('kappa')]).toBe('');
+    expect(row[header.indexOf('kappa_note')]).toBe('undefined_unanimous');
+  });
+
+  it('documents every metric column it emits', () => {
+    const db = testDb();
+    const { entries } = collect(db);
+    const readme = textOf(entries, 'export/README.txt');
+    for (const name of [
+      'frame_agreement.csv',
+      'intra_rater_pairs.csv',
+      'intra_rater_summary.csv',
+      'presence_agreement.csv',
+      'mean_nsd',
+      'excluded_empty_pairs',
+      'undefined_unanimous',
+      'queue_gap',
+    ]) {
+      expect(readme).toContain(name);
+    }
+  });
+});

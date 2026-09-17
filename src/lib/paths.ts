@@ -24,11 +24,22 @@ export function framePath(filename: string): string {
 }
 
 /**
- * Masks are addressed by frame + surgeon + layer, so a re-save overwrites in
- * place and there is never more than one current mask per (frame, surgeon).
+ * Masks are addressed by assignment, not by (frame, surgeon).
+ *
+ * A hidden repeat is a second assignment of the same frame to the same surgeon,
+ * so keying on (frame, surgeon) made the repeat's save overwrite the first
+ * showing's mask and left both annotation rows pointing at the same file. That
+ * silently destroyed the intra-rater data the repeats exist to collect. The
+ * assignment id keeps the two showings apart while a re-save of the same
+ * showing still overwrites in place.
  */
-export function maskPath(frameId: number, surgeonId: number, layer: 'go' | 'nogo'): string {
-  return path.join(MASKS_DIR, `${frameId}__${surgeonId}__${layer}.png`);
+export function maskPath(
+  frameId: number,
+  surgeonId: number,
+  assignmentId: number,
+  layer: 'go' | 'nogo',
+): string {
+  return path.join(MASKS_DIR, `${frameId}__${surgeonId}__a${assignmentId}__${layer}.png`);
 }
 
 /** Path stored in the DB, relative to DATA_DIR, so the volume can move hosts. */

@@ -125,37 +125,90 @@ before the study opens. Refuses to run without `--yes` and prints what it will d
 export/
   frames/<frame_id>.png                        native resolution, always PNG
   masks/<frame_id>__<surgeon_id>__go.png       8-bit grayscale, 0 or 255
-  masks/<frame_id>__<surgeon_id>__nogo.png
+  masks/<frame_id>__<surgeon_id>__nogo.png     first showings only
+  repeats/<frame_id>__<surgeon_id>__<assignment_id>__go.png
+  repeats/<frame_id>__<surgeon_id>__<assignment_id>__nogo.png
   consensus/<frame_id>__go_majority.png        pixel majority vote
   consensus/<frame_id>__nogo_majority.png
-  annotations.csv                              every annotation column plus
-                                               surgeon and frame metadata
-  README.txt                                   describes each file
+  annotations.csv          every annotation column plus surgeon and frame metadata
+  frame_agreement.csv      inter-rater agreement, one row per frame per layer
+  intra_rater_pairs.csv    each hidden repeat against its first showing
+  intra_rater_summary.csv  per surgeon per layer
+  presence_agreement.csv   study-level, chance-corrected
+  README.txt               describes every file and every column
 ```
 
-Go and No-Go are stored as independent layers and are never merged. An absent mask file means that
-layer was empty, not that data is missing.
+Go and No-Go are stored as independent layers and are never merged. An absent
+mask file means that layer was empty, not that data is missing.
 
-**Who counts as a rater** for consensus and agreement: every surgeon whose annotation was submitted
-as `drawn` or `nothing_to_mark`. Saying there is nothing to mark is a real opinion, and it votes
-zero across the whole frame. `cannot_assess` is excluded from the vote entirely. `README.txt` inside
-the export states this too, so the archive is self-describing.
+**Who counts as a rater**: every surgeon whose annotation was submitted as
+`drawn` or `nothing_to_mark`. Saying there is nothing to mark is a real opinion,
+and it votes zero across the frame. `cannot_assess` is excluded from every
+statistic.
 
----
+**First showings only, for everything between surgeons.** A surgeon who also
+received a frame as a hidden repeat has two submitted annotations for it.
+`masks/`, `consensus/` and the inter-rater tables use only the first
+(`is_repeat = 0`); the second appears in `repeats/` and the intra-rater tables.
+Counting both would weight that surgeon twice in the majority vote and pair them
+with themselves in the agreement statistics.
+
+`README.txt` inside the archive states all of this too, so the export is
+self-describing.
+
+## Statistics
+
+Two different questions are reported separately, because collapsing them hides
+which one is driving a result:
+
+- **Presence** — did the surgeons agree a zone of this class exists at all?
+- **Shape** — given that they drew one, how closely do the regions correspond?
+
+| Metric | What it answers |
+| --- | --- |
+| IoU | Mean pairwise area overlap, \|A∩B\| / \|A∪B\| |
+| Dice | Mean pairwise 2\|A∩B\| / (\|A\|+\|B\|). Always reads higher than IoU; quote one, not whichever is larger |
+| NSD | Fraction of each contour within 0.5% of the image diagonal (~11 px at 1080p) of the other. Edges, not areas |
+| Pixel agreement | Whole-image, background included. Reads above 90% even for poor spatial agreement — **not** a headline figure |
+| Cohen's / Fleiss' kappa | Chance-corrected presence agreement, across frames |
+
+Three deliberate choices worth knowing about:
+
+1. **A pair where both surgeons drew nothing is excluded from the shape
+   metrics**, and counted in `excluded_empty_pairs`. Overlap is undefined for
+   that pair, not perfect. Scoring it 1 would pull the mean towards 1 on exactly
+   the frames where least was drawn. Their agreement about absence is captured
+   by the presence statistics instead.
+2. **An undefined statistic is reported as empty, never as `NaN` or a
+   placeholder number.** Kappa is undefined when raters are unanimous
+   (expected agreement is 1, so the coefficient is 0/0); the accompanying
+   `kappa_note` says `undefined_unanimous`, which is a favourable result rather
+   than missing data.
+3. **Intra-rater agreement is the baseline for inter-rater agreement.** Roughly
+   one frame in ten returns unannounced at least 30 positions later. If a
+   surgeon reproduces their own judgement at IoU 0.5, then two surgeons agreeing
+   at 0.5 is the measurement noise floor, not evidence that they disagree.
+   Report inter-rater agreement against this baseline, not against 1.
 
 ## Admin
 
 `/admin`, gated by `ADMIN_PASSWORD`.
 
-- **Surgeons** — frames completed, median seconds per frame, last active, and the background answers.
-- **Per frame** — every surgeon's masks overlaid, each at equal opacity so brightness reads directly
-  as how many surgeons included that pixel. Layers and individual surgeons can be toggled.
-- **Agreement** — mean pairwise pixel agreement (share of the frame two surgeons classify the same
-  way) and mean pairwise IoU (overlap of the marked regions, ignoring the shared background), plus
-  the majority-vote area.
+- **Surgeons** — frames completed, median seconds per frame, last active, and the
+  background answers.
+- **Self-agreement on hidden repeats** — per surgeon: how closely they reproduce
+  their own judgement, and how often their status or confidence changed between
+  showings. Watch this while the study runs: a surgeon whose repeats drift apart
+  is changing their criteria mid-study, and that is worth a conversation before
+  the data is collected rather than after.
+- **Presence agreement** — study-level, chance-corrected, per layer.
+- **Per frame** — every surgeon's masks overlaid, each at equal opacity so
+  brightness reads directly as how many surgeons included that pixel. Presence
+  and shape metrics reported separately, with the excluded-pair count shown.
 - **Export** — one button, streams the zip.
 
----
+The repeat analysis decodes four mask files per pair, so it is cached against a
+fingerprint of the annotations table and recomputed only after a save.
 
 ## Deploying on a Google Cloud `e2-small`
 

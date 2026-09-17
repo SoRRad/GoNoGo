@@ -192,3 +192,23 @@ describe('iou and pixelAgreement', () => {
     expect(pixelAgreement(emptyOccupancy(size, 1), emptyOccupancy(size, 1))).toBe(1);
   });
 });
+
+describe('mask file paths', () => {
+  it('gives a repeat its own file, so it cannot overwrite the first showing', async () => {
+    const { maskPath } = await import('@/lib/paths');
+    // Same frame, same surgeon, different assignment: the hidden repeat.
+    const first = maskPath(7, 5, 1329, 'nogo');
+    const repeat = maskPath(7, 5, 1364, 'nogo');
+    expect(first).not.toBe(repeat);
+  });
+
+  it('is stable for re-saves of the same showing', async () => {
+    const { maskPath } = await import('@/lib/paths');
+    expect(maskPath(7, 5, 1329, 'nogo')).toBe(maskPath(7, 5, 1329, 'nogo'));
+  });
+
+  it('keeps the layers apart', async () => {
+    const { maskPath } = await import('@/lib/paths');
+    expect(maskPath(7, 5, 1329, 'go')).not.toBe(maskPath(7, 5, 1329, 'nogo'));
+  });
+});

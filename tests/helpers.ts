@@ -54,9 +54,10 @@ export function writeMask(
   width: number,
   height: number,
   occupancy: Occupancy,
+  assignmentId = 0,
 ): string {
   fs.mkdirSync(MASKS_DIR, { recursive: true });
-  const absolute = maskPath(frameId, surgeonId, layer);
+  const absolute = maskPath(frameId, surgeonId, assignmentId, layer);
   fs.writeFileSync(absolute, encodeBinaryMaskPng(width, height, occupancy));
   return toRelative(absolute);
 }
