@@ -337,9 +337,14 @@ chmod 600 .env
 cat .env          # write the admin password down somewhere safe
 
 docker compose up -d --build
-docker compose ps        # wait for "healthy"
+docker compose ps
 curl -s localhost:3000/api/health
 ```
+
+On a fresh install `docker compose ps` shows the app as `unhealthy` and the health check answers
+`{"ok":false,"reason":"frames_dir_empty"}`. That is correct: the app is up and can write to the data
+disk, and it reports ready only once study frames are loaded in step 6. Any other `reason` is a real
+problem — see the health check in `src/app/api/health/route.ts` for what each one means.
 
 `e2-small` has 2 GB of RAM. The build is the heaviest step; if it is ever killed, build the image
 elsewhere and push it, or add swap:
@@ -353,7 +358,7 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ### 5. HTTPS with Caddy
 
 ```bash
-sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
+sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gnupg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
   | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
@@ -362,9 +367,17 @@ sudo apt-get update && sudo apt-get install -y caddy
 
 sudo cp /opt/sadi/app/Caddyfile.example /etc/caddy/Caddyfile
 sudo nano /etc/caddy/Caddyfile      # set your domain and email
+sudo -u caddy caddy validate --config /etc/caddy/Caddyfile   # "Valid configuration"
 sudo systemctl reload caddy
 sudo systemctl status caddy
 ```
+
+Run the validate step as the `caddy` user, never plain `sudo`: validating opens the log file, and
+as root that creates `/var/log/caddy/study.log` owned by root, which Caddy (running as `caddy`)
+then cannot write, so the reload fails.
+
+Keep a real email in the Caddyfile: it is what lets Caddy fall back to ZeroSSL if Let's Encrypt
+refuses a certificate, for example because of a rate limit.
 
 The app only listens on `127.0.0.1:3000`, so Caddy is the only way in. Certificates are issued and
 renewed automatically.

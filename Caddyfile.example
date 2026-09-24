@@ -1,13 +1,15 @@
-# Caddy in front of the app: automatic HTTPS from Let's Encrypt, nothing else.
+# Caddy in front of the app: automatic HTTPS, nothing else.
 #
 # Copy to /etc/caddy/Caddyfile on the VM, replace the domain and the email,
 # then: sudo systemctl reload caddy
 #
 # DNS must already point at the VM's static IP before Caddy starts, or the
 # certificate request will fail.
-
 {
-	# Let's Encrypt uses this only for expiry warnings.
+	# Not just a contact address: with an email set, Caddy falls back to ZeroSSL
+	# when Let's Encrypt refuses a certificate (a rate limit, for instance).
+	# Without one it uses Let's Encrypt alone. Let's Encrypt itself stopped
+	# sending expiry emails in 2025, so the address receives little or nothing.
 	email you@example.org
 }
 
@@ -34,13 +36,13 @@ study.example.org {
 	log {
 		output file /var/log/caddy/study.log
 		# Belt and braces: redact the query string on everything that IS logged,
-		# in case a token ever ends up there.
+		# in case a token ever ends up there. /annotate?x=1 is logged as
+		# /annotate?redacted. (The `query` filter cannot do this: it rewrites
+		# named parameters one at a time, and takes two arguments, not one.)
 		format filter {
 			wrap console
 			fields {
-				request>uri query {
-					replace redacted
-				}
+				request>uri regexp "[?].*" "?redacted"
 			}
 		}
 	}
