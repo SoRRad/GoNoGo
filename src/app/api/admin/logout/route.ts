@@ -1,9 +1,9 @@
-import { NextResponse } from 'next/server';
 import { clearAdminSession } from '@/server/auth';
+import { seeOther } from '@/server/redirect';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: Request) {
+export async function POST() {
   await clearAdminSession();
-  return NextResponse.redirect(new URL('/admin', request.url), { status: 303 });
+  return seeOther('/admin');
 }

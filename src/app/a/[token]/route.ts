@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSurgeonByToken } from '@/lib/store';
 import { setSurgeonSession } from '@/server/auth';
+import { seeOther } from '@/server/redirect';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,5 +32,5 @@ export async function GET(request: Request, context: { params: Promise<{ token: 
 
   await setSurgeonSession(surgeon.id);
   const destination = surgeon.onboarded_at ? '/annotate' : '/welcome';
-  return NextResponse.redirect(new URL(destination, request.url), { status: 303 });
+  return seeOther(destination);
 }

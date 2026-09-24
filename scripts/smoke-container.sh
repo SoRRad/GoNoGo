@@ -167,6 +167,21 @@ status="$(curl -s -o /dev/null -w '%{http_code}' -c "${COOKIES}" "${BASE}/a/${TO
 grep -q sadi_session "${COOKIES}" || fail "no session cookie was set"
 echo "session cookie set"
 
+step "Redirects stay on the site behind a proxy"
+# Caddy forwards the public Host and X-Forwarded-Proto, but Next builds
+# request.url from its own listening address, so a redirect built from it sent
+# browsers to https://localhost:3000/... -- every surgeon's access link and the
+# admin login went nowhere. Hitting the container directly never showed it,
+# because there the listening address IS the address in the browser.
+PROXY_HEADERS=(-H "Host: study.example.org" -H "X-Forwarded-Proto: https" -H "X-Forwarded-Host: study.example.org")
+location_of() { tr -d '\r' | awk 'tolower($1) == "location:" { print $2 }'; }
+link_to="$(curl -s -o /dev/null -D - "${PROXY_HEADERS[@]}" "${BASE}/a/${TOKEN}" | location_of)"
+[[ "${link_to}" == "/welcome" ]] || fail "access link behind a proxy redirected to '${link_to}', expected /welcome"
+admin_to="$(curl -s -o /dev/null -D - "${PROXY_HEADERS[@]}" -X POST \
+  --data-urlencode "password=smoke-admin-password" "${BASE}/api/admin/login" | location_of)"
+[[ "${admin_to}" == "/admin" ]] || fail "admin login behind a proxy redirected to '${admin_to}', expected /admin"
+echo "access link -> ${link_to}, admin login -> ${admin_to}"
+
 step "Complete onboarding"
 curl -s -b "${COOKIES}" -c "${COOKIES}" -X POST \
   -F yearsInPractice=12 -F casesPerYear=30 "${BASE}/api/onboarding" | grep -q '"ok":true' \
