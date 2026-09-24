@@ -409,36 +409,60 @@ Everything is under one directory, so there is nothing else to back up.
 
 `scripts/backup.sh` takes a consistent SQLite snapshot through the online backup
 API, tars it with the frames and masks, uploads to Google Cloud Storage, and
-verifies the upload arrived. It refuses to run without a bucket.
+checks the object in the bucket is the same size as the archive it sent. It
+refuses to run without a bucket.
 
 > A plain `cp` of `app.db` is **not** safe. The database runs in WAL mode, so at
 > any instant the committed state is split between `app.db` and `app.db-wal`;
 > copying them separately while a surgeon is autosaving produces a file that
 > opens perfectly and is quietly missing the most recent annotations.
 
+Bucket names are global across all of Google Cloud, so prefix yours with the
+project ID. From Cloud Shell:
+
 ```bash
-# Create the bucket, in the same region as the VM
-gsutil mb -l us-central1 gs://sadi-study-backups
-gsutil versioning set on gs://sadi-study-backups
+BUCKET=gs://my-project-id-sadi-backups
+SA=$(gcloud compute instances describe sadi-study --zone=us-central1-a \
+  --format='value(serviceAccounts[0].email)')
+
+# The bucket: same region as the VM, never public, old versions kept
+gcloud storage buckets create "$BUCKET" --location=us-central1 \
+  --uniform-bucket-level-access --public-access-prevention
+gcloud storage buckets update "$BUCKET" --versioning
+
+# The VM writes each backup, then reads it back to check it
+gcloud storage buckets add-iam-policy-binding "$BUCKET" \
+  --member="serviceAccount:$SA" --role=roles/storage.objectCreator
+gcloud storage buckets add-iam-policy-binding "$BUCKET" \
+  --member="serviceAccount:$SA" --role=roles/storage.objectViewer
+
+# IAM is not enough on its own: a VM created with default settings has a
+# read-only Cloud Storage access scope, and every upload is refused with 403
+# whatever the bucket's IAM says. Changing scopes needs the VM stopped.
+gcloud compute instances stop sadi-study --zone=us-central1-a
+gcloud compute instances set-service-account sadi-study --zone=us-central1-a \
+  --service-account="$SA" --scopes=default,storage-rw
+gcloud compute instances start sadi-study --zone=us-central1-a
+```
+
+Then on the VM:
+
+```bash
+cd /opt/sadi/app
 
 # Tell the backup where to put things
-sudo tee /etc/sadi-backup.env > /dev/null <<'EOF'
-BACKUP_BUCKET=gs://sadi-study-backups
-EOF
+echo "BACKUP_BUCKET=gs://my-project-id-sadi-backups" | sudo tee /etc/sadi-backup.env
 sudo chmod 600 /etc/sadi-backup.env
 
 # Run it once by hand and watch it work
-sudo BACKUP_BUCKET=gs://sadi-study-backups /opt/sadi/app/scripts/backup.sh
+sudo BACKUP_BUCKET=gs://my-project-id-sadi-backups ./scripts/backup.sh
 
 # Then schedule it for 02:30 UTC nightly
-sudo cp /opt/sadi/app/deploy/sadi-backup.service /etc/systemd/system/
-sudo cp /opt/sadi/app/deploy/sadi-backup.timer   /etc/systemd/system/
+sudo cp deploy/sadi-backup.service deploy/sadi-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now sadi-backup.timer
 systemctl list-timers sadi-backup.timer
 ```
-
-The VM's service account needs `roles/storage.objectCreator` on the bucket.
 
 Disk snapshots are a useful second line, but they are not a substitute: they
 capture the WAL mid-write just as a file copy does.
@@ -454,23 +478,34 @@ machine or a scratch directory, before the study opens — and put a tick in the
 checklist below only after you have seen the annotation count come back.
 
 ```bash
-# 1. Fetch an archive
-gsutil ls gs://sadi-study-backups
-gsutil cp gs://sadi-study-backups/sadi-2026-09-17T02-30-11Z.tar.gz /tmp/
+# 1. Fetch the newest archive
+LATEST="$(gcloud storage ls 'gs://my-project-id-sadi-backups/sadi-*.tar.gz' | sort | tail -1)"
+gcloud storage cp "$LATEST" /tmp/
 
 # 2. Unpack it somewhere that is NOT the live data directory
-mkdir -p /tmp/restore && tar xzf /tmp/sadi-*.tar.gz -C /tmp/restore
+rm -rf /tmp/restore && mkdir -p /tmp/restore
+tar xzf "/tmp/$(basename "$LATEST")" -C /tmp/restore
 ls /tmp/restore                      # app-<stamp>.db, frames/, masks/
 
-# 3. Check the database opens and holds what you expect
-docker compose exec -T app node -e "
-  const D = require('better-sqlite3');
-  const db = new D('/data/restore/app-<stamp>.db', { readonly: true });
-  console.log('integrity:', db.pragma('integrity_check', { simple: true }));
-  console.log('annotations:', db.prepare('SELECT COUNT(*) n FROM annotations').get().n);
-  console.log('submitted:', db.prepare('SELECT COUNT(*) n FROM annotations WHERE submitted_at IS NOT NULL').get().n);
+# 3. Open it in a throwaway container and check it holds what you expect.
+#    The snapshot is in WAL mode, so even a read-only open writes a -shm file
+#    beside it: mount the scratch copy read-write, and never the live data.
+docker run --rm --user root -v /tmp/restore:/restore sadi-gonogo:latest node -e "
+  const fs = require('fs'), D = require('better-sqlite3');
+  const name = fs.readdirSync('/restore').find((n) => /^app-.*\.db$/.test(n));
+  const db = new D('/restore/' + name, { readonly: true, fileMustExist: true });
+  console.log('database:   ', name);
+  console.log('integrity:  ', db.pragma('integrity_check', { simple: true }));
+  console.log('surgeons:   ', db.prepare('SELECT COUNT(*) n FROM surgeons').get().n);
+  console.log('frames:     ', db.prepare('SELECT COUNT(*) n FROM frames').get().n,
+    '(images on disk: ' + fs.readdirSync('/restore/frames').length + ')');
+  console.log('annotations:', db.prepare('SELECT COUNT(*) n FROM annotations').get().n,
+    '(submitted: ' + db.prepare('SELECT COUNT(*) n FROM annotations WHERE submitted_at IS NOT NULL').get().n + ')');
 "
 ```
+
+The docker compose app cannot do this check: it sees only the live data disk at `/data`, and
+the archive was unpacked outside it on purpose.
 
 To restore for real, onto a fresh machine:
 

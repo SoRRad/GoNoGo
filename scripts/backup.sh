@@ -16,13 +16,21 @@
 # before anything is uploaded.
 #
 # Environment:
-#   BACKUP_BUCKET   required, e.g. gs://sadi-study-backups
+#   BACKUP_BUCKET   required, e.g. gs://<project-id>-sadi-backups
 #   DATA_DIR        host path of the data volume, default /mnt/disks/sadi-data
 #   KEEP_LOCAL      local archives to keep, default 7
 #   USE_DOCKER      1 (default) runs the snapshot inside the app container,
 #                   0 runs it directly with node from this directory
+#
+# Uploads with `gcloud storage`, which is on every Compute Engine image and in
+# Cloud Shell. The VM needs a storage read-write access scope as well as IAM on
+# the bucket; the README's backup section has both.
 
 set -euo pipefail
+
+# docker compose and dist/ are both resolved from the repository root, so run
+# from there whatever directory this was started in.
+cd "$(dirname "$(readlink -f "$0")")/.."
 
 DATA_DIR="${DATA_DIR:-/mnt/disks/sadi-data}"
 KEEP_LOCAL="${KEEP_LOCAL:-7}"
@@ -33,7 +41,7 @@ ARCHIVE="${BACKUP_DIR}/sadi-${STAMP}.tar.gz"
 SNAPSHOT="${BACKUP_DIR}/app-${STAMP}.db"
 
 if [[ -z "${BACKUP_BUCKET:-}" ]]; then
-  echo "BACKUP_BUCKET is not set (e.g. gs://sadi-study-backups). Refusing to run." >&2
+  echo "BACKUP_BUCKET is not set (e.g. gs://<project-id>-sadi-backups). Refusing to run." >&2
   exit 1
 fi
 if [[ ! -f "${DATA_DIR}/app.db" ]]; then
@@ -42,6 +50,13 @@ if [[ ! -f "${DATA_DIR}/app.db" ]]; then
 fi
 
 mkdir -p "${BACKUP_DIR}"
+if [[ "${USE_DOCKER}" == "1" && "${EUID}" -eq 0 ]]; then
+  # The snapshot is written by the app container, which runs as the owner of the
+  # data volume (uid 1001), not as root. Left root-owned, as mkdir just made it,
+  # this directory refuses the write and every backup fails at step 1 with
+  # SQLITE_CANTOPEN.
+  chown --reference="${DATA_DIR}" "${BACKUP_DIR}"
+fi
 # Remove the intermediate snapshot however this exits; the tarball is the artefact.
 trap 'rm -f "${SNAPSHOT}"' EXIT
 
@@ -65,10 +80,17 @@ tar czf "${ARCHIVE}" \
 echo "      ${ARCHIVE} ($(du -h "${ARCHIVE}" | cut -f1))"
 
 echo "[3/4] Uploading to ${BACKUP_BUCKET}"
-gsutil -q cp "${ARCHIVE}" "${BACKUP_BUCKET}/$(basename "${ARCHIVE}")"
-# Confirm it is actually there. An upload nobody verified is not an upload.
-gsutil -q stat "${BACKUP_BUCKET}/$(basename "${ARCHIVE}")"
-echo "      uploaded and confirmed present in the bucket"
+REMOTE="${BACKUP_BUCKET}/$(basename "${ARCHIVE}")"
+gcloud storage cp "${ARCHIVE}" "${REMOTE}"
+# Confirm it is actually there, and whole. An upload nobody verified is not an
+# upload.
+LOCAL_BYTES="$(stat -c %s "${ARCHIVE}")"
+REMOTE_BYTES="$(gcloud storage objects describe "${REMOTE}" --format='value(size)')"
+if [[ "${REMOTE_BYTES}" != "${LOCAL_BYTES}" ]]; then
+  echo "Upload check failed: ${REMOTE} is ${REMOTE_BYTES:-missing} bytes, local archive is ${LOCAL_BYTES}" >&2
+  exit 1
+fi
+echo "      uploaded and confirmed in the bucket (${REMOTE_BYTES} bytes, matching)"
 
 echo "[4/4] Pruning local archives, keeping ${KEEP_LOCAL}"
 ls -1t "${BACKUP_DIR}"/sadi-*.tar.gz 2>/dev/null | tail -n +$((KEEP_LOCAL + 1)) | xargs -r rm -f
