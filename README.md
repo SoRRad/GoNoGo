@@ -256,6 +256,11 @@ Exact steps. Replace `study.example.org`, the project and the zone.
 ### 1. Create a persistent disk and the VM
 
 ```bash
+# A static IP, so DNS keeps pointing at the right place across reboots.
+# Reserve it FIRST: it only reaches the VM if the VM is created with it.
+gcloud compute addresses create sadi-ip --region=us-central1
+gcloud compute addresses describe sadi-ip --region=us-central1 --format='value(address)'
+
 gcloud compute disks create sadi-data \
   --size=50GB --type=pd-balanced --zone=us-central1-a
 
@@ -265,15 +270,17 @@ gcloud compute instances create sadi-study \
   --image-family=debian-12 --image-project=debian-cloud \
   --boot-disk-size=20GB \
   --disk=name=sadi-data,device-name=sadi-data,mode=rw,boot=no \
+  --address=sadi-ip \
   --tags=http-server,https-server
 
 gcloud compute firewall-rules create allow-http-https \
   --allow=tcp:80,tcp:443 --target-tags=http-server,https-server
-
-# A static IP, so DNS keeps pointing at the right place across reboots
-gcloud compute addresses create sadi-ip --region=us-central1
-gcloud compute addresses describe sadi-ip --region=us-central1 --format='value(address)'
 ```
+
+The `EXTERNAL_IP` printed when the VM is created must be the address reserved above. Without
+`--address`, the VM gets a temporary address of its own and the reserved one is attached to
+nothing: DNS would point at an address that reaches no machine, and the certificate request in
+step 5 would fail.
 
 Point an `A` record for `study.example.org` at that address **before** starting Caddy.
 
