@@ -129,6 +129,14 @@ export function buildQueue(
  * which frames are core.
  */
 export function deriveEstablishedCoreSet(db: Database.Database): number[] {
+  // The recorded core set, when there is one. Inferring it from queues alone
+  // breaks once a single surgeon is left: nothing is shared, so nothing looks
+  // core, and the next surgeon would be dealt a freshly shuffled set.
+  const recorded = db
+    .prepare('SELECT id FROM frames WHERE is_core = 1 AND is_practice = 0 ORDER BY id')
+    .all() as { id: number }[];
+  if (recorded.length > 0) return recorded.map((row) => row.id);
+
   const rows = db
     .prepare(
       `SELECT a.frame_id AS frameId

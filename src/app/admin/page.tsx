@@ -2,7 +2,11 @@ import Link from 'next/link';
 import { getDb } from '@/lib/db';
 import { median, studyPresenceAgreementBothLayers } from '@/lib/analysis';
 import { summariseIntraRaterCached } from '@/lib/intra-rater';
+import { CORE_TARGET, INDIVIDUAL_TARGET } from '@/lib/queue';
 import { isAdmin } from '@/server/auth';
+import { inviteBase } from '@/server/invite-link';
+import ConfirmSubmit from '@/components/ConfirmSubmit';
+import CopyLinkButton from '@/components/CopyLinkButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +17,8 @@ interface SurgeonRow {
   yearsInPractice: number | null;
   casesPerYear: number | null;
   onboardedAt: string | null;
+  accessToken: string;
+  pausedAt: string | null;
   assigned: number;
   completed: number;
   lastActive: string | null;
@@ -42,6 +48,86 @@ function formatWhen(iso: string | null): string {
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days} d ago`;
   return new Date(iso).toISOString().slice(0, 10);
+}
+
+type Params = {
+  error?: string;
+  retry?: string;
+  left?: string;
+  notice?: string;
+  problem?: string;
+  surgeon?: string;
+  name?: string;
+  submitted?: string;
+  available?: string;
+  formName?: string;
+  formEmail?: string;
+};
+
+/** What the last admin action did, in words, so nobody has to guess whether it worked. */
+function ActionMessage({ params, nameOf }: { params: Params; nameOf: (id: number) => string }) {
+  const who = params.surgeon ? nameOf(Number(params.surgeon)) : '';
+  let tone: 'ok' | 'problem' = 'ok';
+  let text: string | null = null;
+
+  switch (params.notice) {
+    case 'added':
+      text = `${who} was added with their own list of images. Use \u201cCopy link\u201d below to send them their invitation.`;
+      break;
+    case 'link':
+      text = `New link made for ${who}. Their old link no longer works. Use \u201cCopy link\u201d to send the new one.`;
+      break;
+    case 'paused':
+      text = `${who} is paused. Their link will not work until you resume them. Their drawings stay in the study.`;
+      break;
+    case 'resumed':
+      text = `${who} can use their link again.`;
+      break;
+    case 'removed':
+      text = `${params.name ?? 'The surgeon'} was removed, along with ${params.submitted ?? 0} submitted drawings.`;
+      break;
+  }
+  switch (params.problem) {
+    case 'not_enough_images':
+      tone = 'problem';
+      text =
+        `Not added: only ${params.available ?? 0} unused images are left, and each surgeon needs ` +
+        `${INDIVIDUAL_TARGET} of their own. Load more images, or remove a surgeon who is not taking part.`;
+      break;
+    case 'duplicate_email':
+      tone = 'problem';
+      text = `Not added: ${params.formEmail ?? 'that email'} is already a surgeon in this study.`;
+      break;
+    case 'invalid_name':
+      tone = 'problem';
+      text = 'Not added: please enter the surgeon\u2019s name.';
+      break;
+    case 'invalid_email':
+      tone = 'problem';
+      text = 'Not added: please enter a valid email address.';
+      break;
+    case 'no_images':
+      tone = 'problem';
+      text = 'Not added: no study images are loaded yet.';
+      break;
+    case 'not_found':
+      tone = 'problem';
+      text = 'That surgeon or image no longer exists. The page below is up to date.';
+      break;
+  }
+  if (!text) return null;
+  return (
+    <p
+      role="status"
+      className={`mt-4 rounded-lg border p-3 text-sm ${
+        tone === 'ok'
+          ? 'border-emerald-900 bg-emerald-950/40 text-emerald-200'
+          : 'border-amber-900 bg-amber-950/50 text-amber-200'
+      }`}
+    >
+      {text}
+    </p>
+  );
 }
 
 function LoginScreen({ error, retry, left }: { error?: string; retry?: string; left?: string }) {
@@ -96,12 +182,9 @@ function LoginScreen({ error, retry, left }: { error?: string; retry?: string; l
   );
 }
 
-export default async function AdminPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ error?: string; retry?: string; left?: string }>;
-}) {
-  const { error, retry, left } = await searchParams;
+export default async function AdminPage({ searchParams }: { searchParams: Promise<Params> }) {
+  const params = await searchParams;
+  const { error, retry, left } = params;
   if (!(await isAdmin())) return <LoginScreen error={error} retry={retry} left={left} />;
 
   const db = getDb();
@@ -114,6 +197,8 @@ export default async function AdminPage({
               s.years_in_practice AS yearsInPractice,
               s.cases_per_year    AS casesPerYear,
               s.onboarded_at      AS onboardedAt,
+              s.access_token      AS accessToken,
+              s.paused_at         AS pausedAt,
               (SELECT COUNT(*) FROM assignments a WHERE a.surgeon_id = s.id) AS assigned,
               (SELECT COUNT(*) FROM annotations an
                 WHERE an.surgeon_id = s.id AND an.submitted_at IS NOT NULL)  AS completed,
@@ -151,6 +236,22 @@ export default async function AdminPage({
 
   const withOpinions = frames.filter((frame) => frame.raters > 0);
 
+  // How many more surgeons the unused images can take at full size. Before any
+  // queue exists the core set is still to be chosen out of the same pool.
+  const pool = db
+    .prepare(
+      `SELECT COALESCE(SUM(is_practice = 0), 0) AS study,
+              COALESCE(SUM(is_practice = 0 AND is_core = 1), 0) AS core,
+              COALESCE(SUM(is_practice = 0 AND is_core = 0
+                           AND id NOT IN (SELECT frame_id FROM assignments)), 0) AS unused
+         FROM frames`,
+    )
+    .get() as { study: number; core: number; unused: number };
+  const unusedForNew = pool.core > 0 ? pool.unused : Math.max(0, pool.study - CORE_TARGET);
+  const canAdd = Math.floor(unusedForNew / INDIVIDUAL_TARGET);
+  const base = await inviteBase();
+  const nameOf = (id: number) => surgeons.find((row) => row.id === id)?.name ?? 'The surgeon';
+
   // Decodes four mask PNGs per repeat pair, so it is cached against the
   // annotations table and only recomputed when something has been saved.
   const intraRater = summariseIntraRaterCached(db);
@@ -180,13 +281,18 @@ export default async function AdminPage({
 
       <p className="mt-2 text-sm text-zinc-500">
         {totalSubmitted} submitted annotations · {withOpinions.length} frames with at least one opinion ·{' '}
-        {frames.length} frames loaded
+        {frames.length} frames loaded ·{' '}
+        <Link href="/admin/images" className="text-zinc-300 underline decoration-zinc-600 hover:text-white">
+          Manage images
+        </Link>
       </p>
 
-      <section className="mt-8">
+      <ActionMessage params={params} nameOf={nameOf} />
+
+      <section id="surgeons" className="mt-8 scroll-mt-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">Surgeons</h2>
         <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-800">
-          <table className="w-full min-w-[46rem] text-sm">
+          <table className="w-full min-w-[60rem] text-sm">
             <thead className="bg-zinc-900/70 text-left text-xs uppercase tracking-wide text-zinc-500">
               <tr>
                 <th className="px-4 py-3 font-medium">Surgeon</th>
@@ -194,6 +300,7 @@ export default async function AdminPage({
                 <th className="px-4 py-3 font-medium">Frames completed</th>
                 <th className="px-4 py-3 font-medium">Median s / frame</th>
                 <th className="px-4 py-3 font-medium">Last active</th>
+                <th className="px-4 py-3 font-medium">Invitation</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-800">
@@ -207,8 +314,10 @@ export default async function AdminPage({
                     <td className="px-4 py-3">
                       <div className="font-medium">{surgeon.name}</div>
                       <div className="text-xs text-zinc-500">{surgeon.email}</div>
-                      {!surgeon.onboardedAt && (
-                        <div className="mt-1 text-xs text-amber-400">not started</div>
+                      {surgeon.pausedAt ? (
+                        <div className="mt-1 text-xs text-amber-400">paused · link switched off</div>
+                      ) : (
+                        !surgeon.onboardedAt && <div className="mt-1 text-xs text-amber-400">not started</div>
                       )}
                     </td>
                     <td className="px-4 py-3 text-zinc-400">
@@ -230,12 +339,110 @@ export default async function AdminPage({
                       {medianSeconds === null ? '—' : `${medianSeconds} s`}
                     </td>
                     <td className="px-4 py-3 text-zinc-400">{formatWhen(surgeon.lastActive)}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {!surgeon.pausedAt && <CopyLinkButton link={`${base}/a/${surgeon.accessToken}`} />}
+                        <form action={`/api/admin/surgeons/${surgeon.id}/link`} method="post">
+                          <ConfirmSubmit
+                            message={
+                              `Make a new link for ${surgeon.name}?\n\nTheir current link stops working ` +
+                              'straight away, including anywhere it is already open. Use this if a link ' +
+                              'was sent to the wrong person.'
+                            }
+                            className="rounded-md px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200"
+                          >
+                            New link
+                          </ConfirmSubmit>
+                        </form>
+                        {surgeon.pausedAt ? (
+                          <form action={`/api/admin/surgeons/${surgeon.id}/resume`} method="post">
+                            <button
+                              type="submit"
+                              className="rounded-md px-2 py-1 text-xs text-emerald-300 hover:text-emerald-200"
+                            >
+                              Resume
+                            </button>
+                          </form>
+                        ) : (
+                          <form action={`/api/admin/surgeons/${surgeon.id}/pause`} method="post">
+                            <ConfirmSubmit
+                              message={
+                                `Pause ${surgeon.name}?\n\nTheir link stops working until you resume ` +
+                                'them. Everything they have drawn stays in the study.'
+                              }
+                              className="rounded-md px-2 py-1 text-xs text-zinc-400 hover:text-zinc-200"
+                            >
+                              Pause
+                            </ConfirmSubmit>
+                          </form>
+                        )}
+                        <Link
+                          href={`/admin/surgeons/${surgeon.id}/remove`}
+                          className="rounded-md px-2 py-1 text-xs text-red-300 hover:text-red-200"
+                        >
+                          Remove…
+                        </Link>
+                      </div>
+                    </td>
                   </tr>
                 );
               })}
+              {surgeons.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-3 text-zinc-500">
+                    No surgeons yet. Add the first one below.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
+
+        <form
+          id="add-surgeon"
+          action="/api/admin/surgeons"
+          method="post"
+          className="mt-4 scroll-mt-4 rounded-lg border border-zinc-800 p-4"
+        >
+          <h3 className="text-sm font-medium text-zinc-200">Add a surgeon</h3>
+          <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+            Their list is built straight away: the practice images, the {CORE_TARGET} images every surgeon
+            sees, and {INDIVIDUAL_TARGET} of their own.{' '}
+            {canAdd > 0
+              ? `${unusedForNew} unused images are left — enough for ${canAdd} more ${canAdd === 1 ? 'surgeon' : 'surgeons'}.`
+              : `${unusedForNew} unused images are left — not enough for another surgeon, who would need ${INDIVIDUAL_TARGET}.`}{' '}
+            Then use &ldquo;Copy link&rdquo; and email them their invitation yourself.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <input
+              name="name"
+              required
+              maxLength={120}
+              defaultValue={params.formName ?? ''}
+              placeholder="Name, e.g. Dr Jane Smith"
+              aria-label="Surgeon name"
+              className="min-w-[14rem] flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm
+                         text-zinc-100 outline-none focus:border-zinc-500"
+            />
+            <input
+              name="email"
+              type="email"
+              required
+              maxLength={254}
+              defaultValue={params.formEmail ?? ''}
+              placeholder="Email"
+              aria-label="Surgeon email"
+              className="min-w-[14rem] flex-1 rounded-lg border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm
+                         text-zinc-100 outline-none focus:border-zinc-500"
+            />
+            <button
+              type="submit"
+              className="rounded-lg bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-100"
+            >
+              Add surgeon
+            </button>
+          </div>
+        </form>
       </section>
 
       <section className="mt-10">

@@ -313,6 +313,9 @@ echo "  ... $(echo "${NAMES}" | wc -l) entries total"
 step "The statistics in the export"
 docker exec "${CONTAINER}" node /app/smoke/check-export.cjs
 
+step "Study management from the admin panel"
+docker exec "${CONTAINER}" node /app/smoke/admin.cjs
+
 step "Admin is reachable and gated"
 admin_code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin")"
 [[ "${admin_code}" == "200" ]] || fail "admin page did not render: ${admin_code}"

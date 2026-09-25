@@ -117,16 +117,32 @@ export default async function AdminFramePage({ params }: { params: Promise<{ fra
 
   return (
     <main className="mx-auto max-w-6xl px-5 py-8">
-      <Link href="/admin" className="text-sm text-zinc-500 hover:text-zinc-300">
-        ← All frames
-      </Link>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+        <Link href="/admin" className="text-zinc-500 hover:text-zinc-300">
+          ← Study administration
+        </Link>
+        <Link href="/admin/images" className="text-zinc-500 hover:text-zinc-300">
+          All images
+        </Link>
+      </div>
 
-      <h1 className="mt-3 text-xl font-semibold">{frame.filename}</h1>
-      <p className="mt-1 text-sm text-zinc-500">
-        frame {frame.id} · {frame.width} × {frame.height}
-        {frame.source_video ? ` · ${frame.source_video}` : ''}
-        {frame.is_practice ? ' · practice frame' : ''}
-      </p>
+      <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold">{frame.filename}</h1>
+          <p className="mt-1 text-sm text-zinc-500">
+            frame {frame.id} · {frame.width} × {frame.height}
+            {frame.source_video ? ` · ${frame.source_video}` : ''}
+            {frame.is_practice ? ' · practice frame' : ''}
+            {frame.is_core ? ' · seen by every surgeon' : ''}
+          </p>
+        </div>
+        <Link
+          href={`/admin/frames/${frame.id}/remove`}
+          className="rounded-lg border border-red-900/80 px-3 py-2 text-sm text-red-300 hover:border-red-700 hover:text-red-200"
+        >
+          Remove this image…
+        </Link>
+      </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
         <AdminOverlay

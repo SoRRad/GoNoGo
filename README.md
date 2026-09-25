@@ -37,6 +37,9 @@ annotation screen — and around keeping every surgeon's judgement independent o
 - **Access tokens stay out of logs.** A surgeon's link is a working credential, so
   `Referrer-Policy: no-referrer` stops the browser leaking it to anywhere the page navigates, and
   the Caddy config excludes `/a/*` from the access log entirely.
+- **A link can be switched off.** A surgeon's session is bound to the link they
+  opened it with, so pausing them or issuing a new link from `/admin` locks out
+  the old link and every browser already signed in with it, at once.
 - **The admin password cannot be guessed at leisure.** Five failed attempts from an address earns a
   fifteen minute lockout, checked before the password is. Failures are logged with a timestamp; the
   password never is.
@@ -98,6 +101,9 @@ token per surgeon and prints the links. **Email these individually and treat a l
 password** — it is the only credential. Re-running keeps existing tokens, so links already sent
 never stop working.
 
+Once the study is running it is simpler to add surgeons from `/admin`, which builds their queue in
+the same step (see [Admin](#admin)).
+
 ### `npm run assign`
 
 Builds one queue per surgeon:
@@ -119,8 +125,11 @@ with case. The script reports how many distinct videos each surgeon's set spans
 and warns if any single video contributes more than 30% of it.
 
 Surgeons who already have a queue are skipped, so adding a late participant never disturbs anyone's
-work — and they still receive the same core set everyone else got. `-- --reset` rebuilds queues for
-surgeons who have not submitted anything yet; it refuses to touch a surgeon who has.
+work — and they still receive the same core set everyone else got. The core set is recorded on the
+frames themselves the first time it is dealt, so it survives removing surgeons later, down to the
+last one: a pilot run with two testers, then removed, leaves the real participants the same core
+set the pilot had. `-- --reset` rebuilds queues for surgeons who have not submitted anything yet; it
+refuses to touch a surgeon who has.
 
 **For the real study run, use `-- --strict`.** It refuses to build undersized
 queues instead of scaling them down, so a missing batch of frames stops the
@@ -245,6 +254,36 @@ Three deliberate choices worth knowing about:
   brightness reads directly as how many surgeons included that pixel. Presence
   and shape metrics reported separately, with the excluded-pair count shown.
 - **Export** — one button, streams the zip.
+
+### Managing the study from `/admin`
+
+Every change below is a form on the admin page, refused unless it comes from the
+admin page itself on this exact address. Each is logged as a `[sadi] admin …`
+line in `docker compose logs app`.
+
+- **Add a surgeon** — name and email. Their full queue (practice, the core set,
+  70 images nobody else has, hidden repeats) is built in the same step. If fewer
+  than 70 unused images remain, nothing is added and the page says how many are
+  left; load more images and try again. The page shows how many more surgeons
+  the remaining images can cover.
+- **Copy link** — copies that surgeon's personal link to paste into an email.
+  Links are not displayed on the page, so a screen share does not leak one; only
+  if the browser blocks copying is the link shown, selected, to copy by hand.
+- **New link** — replaces the link. The old one stops working at once, including
+  in any browser already signed in with it. Their work is kept.
+- **Pause / Resume** — switches the link off without deleting anything; resume
+  switches the same link back on.
+- **Remove…** — deletes the surgeon, their queue and every drawing they made,
+  after a confirmation page listing exactly what goes. Their unique images
+  return to the pool for the next surgeon. Use Pause instead to keep their work.
+- **Manage images** (`/admin/images`) — every image, by operation. Opening one
+  offers **Remove this image…**: it leaves every surgeon's list, with any
+  drawings on it, and the file is deleted. Each list closes up with no gaps, and
+  a surgeon who was on that image is moved on to their next one.
+
+Removals cannot be undone except from a backup, which is why each has its own
+confirmation page. A surgeon who is signed in when their list changes sees a
+short note and carries on from their next image.
 
 The repeat analysis decodes four mask files per pair, so it is cached against a
 fingerprint of the annotations table and recomputed only after a save.
@@ -537,7 +576,12 @@ docker compose exec app npm run export
 cd /opt/sadi/app && git pull && docker compose up -d --build
 ```
 
-The database and masks live on the mounted disk, untouched by a rebuild.
+The database and masks live on the mounted disk, untouched by a rebuild. New
+columns are added to the database automatically on start.
+
+The update that added surgeon management binds each session to its link, so it
+signs every surgeon out once: they open their emailed link again and carry on
+where they left off.
 
 ---
 
@@ -672,6 +716,13 @@ opinion:
   fail with `IoU 1.0000` — a repeat agreeing perfectly with itself, which is
   what that bug did to reliability figures before it was fixed.
 
+- Then it manages the study through the admin panel's own forms: an add that
+  must be refused and leave nothing behind, a new link that must lock out the
+  old link and its open session, pause and resume, removing the shared frame
+  (both queues close up with no gaps; masks, file and rows gone), and removing a
+  surgeon (their masks gone, the other surgeon's untouched). Posts from another
+  `*.sslip.io` address, which browsers treat as the same site, must be refused.
+
 `scripts/smoke/` holds the helpers it copies into the running container. The
 whole run takes about a minute.
 
@@ -691,6 +742,13 @@ in-memory SQLite database built from the real schema:
   mask file degrades to all-zero instead of throwing.
 - **Export** — CSV quoting round-trips commas, quotes and newlines; the consensus
   mask recomputes to the same pixels from the individual masks shipped beside it.
+- **Management** — adding a surgeon gives them the established core set, and a
+  refused add leaves nothing behind; the core set survives a pilot's testers
+  being removed; pause, resume and a new link each invalidate or restore the
+  session correctly; removing a frame closes every queue up without gaps,
+  repeats included; removing a surgeon frees their images and deletes their
+  masks; an older database migrates in place. Same-origin checks refuse other
+  `*.sslip.io` addresses and accept the browser's own `Origin: null`.
 
 Beyond the suite, the browser behaviour was exercised by driving a real Chromium:
 the full surgeon flow including resume-after-reload and one-step-back, admin

@@ -141,6 +141,36 @@ export default function Annotator({ initial }: { initial: QueueWindow }) {
     [confidence],
   );
 
+  /**
+   * The study team can change a queue while it is open: remove an image, pause
+   * a surgeon, or replace their link. Those answer 404/403 or 401, which no
+   * amount of retrying fixes, so say what happened instead of blaming the
+   * connection. Returns true when the status was one of those.
+   */
+  const recoverFromChangedQueue = useCallback(async (status: number): Promise<boolean> => {
+    const signedOut = 'You have been signed out. Please open your personal link from your email again.';
+    if (status === 401) {
+      dirtyRef.current = false;
+      setSaveError(signedOut);
+      return true;
+    }
+    if (status !== 403 && status !== 404) return false;
+    const response = await fetch('/api/queue');
+    if (response.status === 401) {
+      dirtyRef.current = false;
+      setSaveError(signedOut);
+      return true;
+    }
+    if (!response.ok) return false;
+    const payload = (await response.json()) as QueueWindow;
+    dirtyRef.current = false;
+    setReturnIndex(null);
+    setQueue(payload);
+    setActiveIndex(Math.min(payload.state.currentIndex, payload.state.total));
+    setSaveError('The study team updated your list, so you have been moved on to your next image.');
+    return true;
+  }, []);
+
   const autosave = useCallback(async () => {
     if (busyRef.current || !dirtyRef.current || !itemRef.current) return;
     // Nothing drawn, nothing chosen, nothing stored before: no row to create.
@@ -155,14 +185,17 @@ export default function Annotator({ initial }: { initial: QueueWindow }) {
     dirtyRef.current = false;
     try {
       const response = await fetch('/api/annotations', { method: 'POST', body: form });
-      if (!response.ok) throw new Error(String(response.status));
+      if (!response.ok) {
+        if (await recoverFromChangedQueue(response.status)) return;
+        throw new Error(String(response.status));
+      }
       setSaveError(null);
     } catch {
       // Put the work back on the queue so the next tick tries again.
       dirtyRef.current = true;
       setSaveError('Not saved yet — retrying.');
     }
-  }, [buildForm, confidence]);
+  }, [buildForm, confidence, recoverFromChangedQueue]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -223,7 +256,10 @@ export default function Annotator({ initial }: { initial: QueueWindow }) {
         });
         if (!form) return;
         const response = await fetch('/api/annotations', { method: 'POST', body: form });
-        if (!response.ok) throw new Error(String(response.status));
+        if (!response.ok) {
+          if (await recoverFromChangedQueue(response.status)) return;
+          throw new Error(String(response.status));
+        }
         const next = (await response.json()) as QueueWindow & { ok: boolean };
         dirtyRef.current = false;
         setSaveError(null);
@@ -238,7 +274,7 @@ export default function Annotator({ initial }: { initial: QueueWindow }) {
         setBusy(false);
       }
     },
-    [buildForm, goToWindow, returnIndex],
+    [buildForm, goToWindow, returnIndex, recoverFromChangedQueue],
   );
 
   const stepBack = useCallback(async () => {

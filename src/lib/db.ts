@@ -13,6 +13,8 @@ export interface Surgeon {
   cases_per_year: number | null;
   onboarded_at: string | null;
   created_at: string;
+  /** Set while the surgeon's access is paused: their link and session stop working, their work stays. */
+  paused_at: string | null;
 }
 
 export interface Frame {
@@ -22,6 +24,8 @@ export interface Frame {
   width: number;
   height: number;
   is_practice: number;
+  /** 1 for the core set every surgeon sees. Recorded once, so it survives surgeons being removed. */
+  is_core: number;
 }
 
 export interface Assignment {
@@ -58,7 +62,8 @@ CREATE TABLE IF NOT EXISTS surgeons (
   years_in_practice INTEGER,
   cases_per_year    INTEGER,
   onboarded_at      TEXT,
-  created_at        TEXT    NOT NULL
+  created_at        TEXT    NOT NULL,
+  paused_at         TEXT
 );
 
 CREATE TABLE IF NOT EXISTS frames (
@@ -67,7 +72,8 @@ CREATE TABLE IF NOT EXISTS frames (
   source_video TEXT,
   width        INTEGER NOT NULL,
   height       INTEGER NOT NULL,
-  is_practice  INTEGER NOT NULL DEFAULT 0
+  is_practice  INTEGER NOT NULL DEFAULT 0,
+  is_core      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS assignments (
@@ -110,6 +116,37 @@ CREATE INDEX IF NOT EXISTS idx_frames_practice        ON frames (is_practice);
 export function applySchema(db: Database.Database): void {
   db.pragma('foreign_keys = ON');
   db.exec(SCHEMA);
+  migrate(db);
+}
+
+/**
+ * Columns added after a study may already have started. CREATE TABLE IF NOT
+ * EXISTS leaves an existing table exactly as it was, so each addition is made
+ * here, once, and is a no-op on a database that already has it.
+ */
+function migrate(db: Database.Database): void {
+  const surgeonColumns = new Set(
+    (db.prepare('PRAGMA table_info(surgeons)').all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!surgeonColumns.has('paused_at')) {
+    db.exec('ALTER TABLE surgeons ADD COLUMN paused_at TEXT');
+  }
+
+  const frameColumns = new Set(
+    (db.prepare('PRAGMA table_info(frames)').all() as { name: string }[]).map((column) => column.name),
+  );
+  if (!frameColumns.has('is_core')) {
+    // The core set used to be inferred as "study frames in two or more
+    // surgeons' queues", which forgets itself the moment only one surgeon is
+    // left with a queue. Record it from the queues as they stand, once.
+    db.transaction(() => {
+      db.exec('ALTER TABLE frames ADD COLUMN is_core INTEGER NOT NULL DEFAULT 0');
+      db.exec(`UPDATE frames SET is_core = 1
+                WHERE is_practice = 0
+                  AND id IN (SELECT frame_id FROM assignments
+                              GROUP BY frame_id HAVING COUNT(DISTINCT surgeon_id) >= 2)`);
+    })();
+  }
 }
 
 let instance: Database.Database | null = null;
