@@ -5,6 +5,9 @@
 #
 # DNS must already point at the VM's static IP before Caddy starts, or the
 # certificate request will fail.
+#
+# To move a running study to a new address later, use scripts/set-domain.sh
+# rather than editing this by hand: it keeps the links already sent working.
 {
 	# Not just a contact address: with an email set, Caddy falls back to ZeroSSL
 	# when Let's Encrypt refuses a certificate (a rate limit, for instance).

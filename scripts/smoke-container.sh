@@ -105,6 +105,12 @@ docker run -d --name "${CONTAINER}" ${DOCKER_RUN_EXTRA} \
   -e ADMIN_PASSWORD=smoke-admin-password \
   -e SESSION_SECRET=smoke-session-secret-at-least-32-chars \
   -e BASE_URL="${BASE}" \
+  -e SMTP_USER=lab@example.org \
+  -e "SMTP_PASSWORD=abcd efgh ijkl mnop" \
+  -e SMTP_HOST=127.0.0.1 \
+  -e SMTP_PORT=2525 \
+  -e SMTP_SECURE=false \
+  -e SMTP_INSECURE_FOR_TESTING=true \
   -v "${DATA_DIR}:/data" \
   "${IMAGE_TAG}" >/dev/null
 echo "container ${CONTAINER} on ${BASE}"

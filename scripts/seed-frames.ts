@@ -16,6 +16,7 @@ import path from 'path';
 import { imageSize } from 'image-size';
 import { getDb } from '../src/lib/db';
 import { FRAMES_DIR, ensureDataDirs, framePath } from '../src/lib/paths';
+import { sha256 } from '../src/lib/upload';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg']);
 
@@ -97,13 +98,14 @@ function main() {
   }
 
   const insert = db.prepare(
-    `INSERT INTO frames (filename, source_video, width, height, is_practice)
-     VALUES (@filename, @sourceVideo, @width, @height, @isPractice)
+    `INSERT INTO frames (filename, source_video, width, height, is_practice, content_sha256)
+     VALUES (@filename, @sourceVideo, @width, @height, @isPractice, @contentSha256)
      ON CONFLICT (filename) DO UPDATE SET
-        source_video = excluded.source_video,
-        width        = excluded.width,
-        height       = excluded.height,
-        is_practice  = excluded.is_practice`,
+        source_video   = excluded.source_video,
+        width          = excluded.width,
+        height         = excluded.height,
+        is_practice    = excluded.is_practice,
+        content_sha256 = excluded.content_sha256`,
   );
 
   let added = 0;
@@ -139,6 +141,7 @@ function main() {
         width: dimensions.width,
         height: dimensions.height,
         isPractice: candidate.isPractice ? 1 : 0,
+        contentSha256: sha256(buffer),
       });
       if (existed) updated++;
       else added++;

@@ -1,6 +1,8 @@
 import Link from 'next/link';
 import { getDb } from '@/lib/db';
+import { CORE_TARGET, INDIVIDUAL_TARGET } from '@/lib/queue';
 import { isAdmin } from '@/server/auth';
+import ImageUploader from '@/components/ImageUploader';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,6 +59,9 @@ export default async function ImagesPage({
 
   const study = rows.filter((row) => !row.isPractice);
   const unused = study.filter((row) => row.surgeons === 0 && !row.isCore).length;
+  // As on the admin page: until the first list is built, the core set is still to come out of the pool.
+  const spare = study.some((row) => row.isCore) ? unused : Math.max(0, study.length - CORE_TARGET);
+  const room = Math.floor(spare / INDIVIDUAL_TARGET);
 
   return (
     <main className="mx-auto max-w-6xl px-5 py-8">
@@ -85,6 +90,23 @@ export default async function ImagesPage({
           That image no longer exists. The list below is up to date.
         </p>
       )}
+
+      <section className="mt-6 rounded-lg border border-zinc-800 p-4">
+        <h2 className="text-sm font-medium text-zinc-200">Add images</h2>
+        <p className="mt-1 text-xs leading-relaxed text-zinc-500">
+          Choose a folder with one sub-folder per operation, like the one the study was loaded from, or a single
+          operation&apos;s folder. New images go into the spare pool for surgeons you add from now on; nobody&apos;s
+          current list changes. Images already in the study are recognised and skipped, even if renamed. Folder
+          and file names are kept in the study records and the export, so they must not contain patient details.
+        </p>
+        <p className="mt-1 text-xs text-zinc-500">
+          {spare} spare {spare === 1 ? 'image' : 'images'} now: enough for {room} more{' '}
+          {room === 1 ? 'surgeon' : 'surgeons'}, who need {INDIVIDUAL_TARGET} each.
+        </p>
+        <div className="mt-3">
+          <ImageUploader />
+        </div>
+      </section>
 
       <p className="mt-6 text-xs text-zinc-500">
         Open an operation to see its images. Select one to view it, and to remove it from the study.

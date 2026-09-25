@@ -11,6 +11,15 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env}
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       DATA_DIR: /data
+      # Invitation emails, optional: without them the admin page offers Copy link
+      # only. See "Invitation emails" in the README.
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      MAIL_FROM: ${MAIL_FROM:-}
+      INVITE_BCC: ${INVITE_BCC:-}
     volumes:
       - sadi-data:/data
     healthcheck:

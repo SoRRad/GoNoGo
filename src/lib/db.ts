@@ -15,6 +15,8 @@ export interface Surgeon {
   created_at: string;
   /** Set while the surgeon's access is paused: their link and session stop working, their work stays. */
   paused_at: string | null;
+  /** When the admin panel last emailed them their invitation. */
+  invited_at: string | null;
 }
 
 export interface Frame {
@@ -26,6 +28,8 @@ export interface Frame {
   is_practice: number;
   /** 1 for the core set every surgeon sees. Recorded once, so it survives surgeons being removed. */
   is_core: number;
+  /** SHA-256 of the image file, so an image uploaded twice under another name is recognised. */
+  content_sha256: string | null;
 }
 
 export interface Assignment {
@@ -63,7 +67,8 @@ CREATE TABLE IF NOT EXISTS surgeons (
   cases_per_year    INTEGER,
   onboarded_at      TEXT,
   created_at        TEXT    NOT NULL,
-  paused_at         TEXT
+  paused_at         TEXT,
+  invited_at        TEXT
 );
 
 CREATE TABLE IF NOT EXISTS frames (
@@ -73,7 +78,8 @@ CREATE TABLE IF NOT EXISTS frames (
   width        INTEGER NOT NULL,
   height       INTEGER NOT NULL,
   is_practice  INTEGER NOT NULL DEFAULT 0,
-  is_core      INTEGER NOT NULL DEFAULT 0
+  is_core      INTEGER NOT NULL DEFAULT 0,
+  content_sha256 TEXT
 );
 
 CREATE TABLE IF NOT EXISTS assignments (
@@ -100,6 +106,12 @@ CREATE TABLE IF NOT EXISTS annotations (
   created_at     TEXT    NOT NULL,
   updated_at     TEXT    NOT NULL,
   submitted_at   TEXT
+);
+
+-- Study settings the admin can change, such as the invitation email's wording.
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_assignments_queue      ON assignments (surgeon_id, display_order);
@@ -131,6 +143,9 @@ function migrate(db: Database.Database): void {
   if (!surgeonColumns.has('paused_at')) {
     db.exec('ALTER TABLE surgeons ADD COLUMN paused_at TEXT');
   }
+  if (!surgeonColumns.has('invited_at')) {
+    db.exec('ALTER TABLE surgeons ADD COLUMN invited_at TEXT');
+  }
 
   const frameColumns = new Set(
     (db.prepare('PRAGMA table_info(frames)').all() as { name: string }[]).map((column) => column.name),
@@ -147,6 +162,11 @@ function migrate(db: Database.Database): void {
                               GROUP BY frame_id HAVING COUNT(DISTINCT surgeon_id) >= 2)`);
     })();
   }
+  if (!frameColumns.has('content_sha256')) {
+    // Filled in for existing images the first time someone uploads more.
+    db.exec('ALTER TABLE frames ADD COLUMN content_sha256 TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_frames_content ON frames (content_sha256)');
 }
 
 let instance: Database.Database | null = null;

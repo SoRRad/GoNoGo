@@ -1,13 +1,17 @@
 /**
  * The admin panel's study management, driven over HTTP against the running
  * container: refusing requests from other pages, replacing a link, pausing,
- * removing a frame that surgeons have drawn on, and removing a surgeon.
+ * removing a frame that surgeons have drawn on, removing a surgeon, emailing
+ * an invitation (to a stand-in mail server on port 2525, which the container
+ * is configured to use), editing its wording, and uploading an image.
  *
  * Runs after the export checks, since it deliberately changes the study.
  */
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
+const { PNG } = require('pngjs');
+const { startSmtpSink } = require('./smtp-sink.cjs');
 
 const DATA = '/data';
 const BASE = 'http://127.0.0.1:3000';
@@ -46,7 +50,12 @@ const contiguous = (orders) => orders.every((d, i) => d === i);
   console.log('the database was migrated in place');
   const surgeonColumns = db().prepare('PRAGMA table_info(surgeons)').all().map((c) => c.name);
   const frameColumns = db().prepare('PRAGMA table_info(frames)').all().map((c) => c.name);
-  check(surgeonColumns.includes('paused_at') && frameColumns.includes('is_core'), 'paused_at and is_core exist');
+  check(
+    surgeonColumns.includes('paused_at') && surgeonColumns.includes('invited_at') &&
+      frameColumns.includes('is_core') && frameColumns.includes('content_sha256') &&
+      Boolean(db().prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get()),
+    'paused_at, invited_at, is_core, content_sha256 and settings exist',
+  );
   const core = db().prepare('SELECT COUNT(*) AS n FROM frames WHERE is_core = 1').get().n;
   const shared = db()
     .prepare(`SELECT COUNT(*) AS n FROM (SELECT frame_id FROM assignments a JOIN frames f ON f.id = a.frame_id
@@ -137,6 +146,66 @@ const contiguous = (orders) => orders.every((d, i) => d === i);
       othersMasks.every((n) => fs.existsSync(path.join(DATA, 'masks', n))),
     'the other surgeon’s work is untouched',
   );
+
+  console.log('');
+  console.log('emailing an invitation');
+  const sink = await startSmtpSink({ port: 2525 });
+  const invite = await post(`/api/admin/surgeons/${two.id}/invite`, { cookie: admin });
+  check(invite.status === 303 && invite.headers.get('location').includes('notice=invited'), `sent: ${invite.headers.get('location')}`);
+  const email = db().prepare('SELECT email, access_token AS token, invited_at AS at FROM surgeons WHERE id = ?').get(two.id);
+  const [letter] = sink.messages;
+  check(Boolean(letter) && letter.to.includes(email.email) && letter.to.includes('lab@example.org'), 'to the surgeon, with a hidden copy to the study inbox');
+  check(Boolean(letter) && !letter.headers.bcc && letter.body.includes(`/a/${email.token}`), 'carrying their own link, and no Bcc header');
+  check(sink.logins.length === 1 && sink.logins[0].pass === 'abcdefghijklmnop', 'signed in with the app password, spaces removed');
+  check(Boolean(email.at), 'the invitation is recorded');
+  const twice = await post(`/api/admin/surgeons/${two.id}/invite`, { cookie: admin });
+  check(twice.headers.get('location').includes('problem=just_sent') && sink.messages.length === 1, 'a second click straight away sends nothing');
+  check((await post(`/api/admin/surgeons/${two.id}/invite`, { cookie: admin, headers: { 'sec-fetch-site': 'same-site' } })).status === 403, 'and a post from another page is refused');
+
+  const noLink = await post('/api/admin/invitation', { cookie: admin, form: { intent: 'save', fromName: 'Lab', subject: 'Hi', body: 'No link' } });
+  check(noLink.headers.get('location').includes('problem=template_needs_link'), 'wording without {link} is not saved');
+  const tested = await post('/api/admin/invitation', {
+    cookie: admin,
+    form: { intent: 'test', fromName: 'Smoke Lab', subject: 'Hello {name}', body: 'Dear {name},\r\n\r\n{link}\r\n' },
+  });
+  const test = sink.messages[1];
+  check(tested.headers.get('location').includes('notice=test_sent') && Boolean(test), 'saved, and a test sent');
+  check(
+    Boolean(test) && test.to.join() === 'lab@example.org' && test.headers.subject === '[Test] Hello Dr Example Surgeon' &&
+      test.body.includes('/a/example-only-not-a-real-link'),
+    'the test goes to the study inbox, with an example name and a link that does not work',
+  );
+  await sink.close();
+
+  console.log('');
+  console.log('uploading an image');
+  const image = new PNG({ width: 32, height: 18 });
+  for (let i = 0; i < image.data.length; i++) image.data[i] = (i * 37) % 256;
+  const bytes = PNG.sync.write(image);
+  const upload = (form = {}, body = bytes, headers = {}) =>
+    fetch(`${BASE}/api/admin/frames/upload?${new URLSearchParams({ operation: 'Case 99', name: 'new frame.png', ...form })}`, {
+      method: 'POST',
+      headers: { cookie: admin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/octet-stream', ...headers },
+      body,
+    });
+  const added = await (await upload()).json();
+  check(added.kind === 'added' && added.filename === 'Case_99__new_frame.png', `added as ${added.filename}`);
+  const stored = db().prepare('SELECT * FROM frames WHERE id = ?').get(added.id);
+  check(
+    stored && stored.source_video === 'Case 99' && stored.width === 32 && stored.height === 18 && !stored.is_core &&
+      fs.readFileSync(path.join(DATA, 'frames', added.filename)).equals(bytes),
+    'recorded in the spare pool, with the file on disk',
+  );
+  check(!db().prepare('SELECT 1 FROM assignments WHERE frame_id = ?').get(added.id), 'nobody’s list changed');
+  const again = await (await upload({ operation: 'Renamed', name: 'copy.png' })).json();
+  check(again.kind === 'duplicate' && again.reason === 'same_image', 'the same image again, renamed, is skipped');
+  const existing = db().prepare('SELECT filename FROM frames WHERE id = ?').get(plan.sharedB.frameId).filename;
+  const old = await (await upload({ operation: 'Anything', name: 'x.png' }, fs.readFileSync(path.join(DATA, 'frames', existing)))).json();
+  check(old.kind === 'duplicate' && old.id === plan.sharedB.frameId, 'an image loaded before uploads existed is recognised');
+  const junk = await (await upload({ name: 'notes.png' }, Buffer.from('not an image'))).json();
+  check(junk.kind === 'refused' && junk.reason === 'not_an_image', 'a file that is not an image is refused');
+  check((await upload({}, bytes, { cookie: '' })).status === 401, 'no admin cookie: 401');
+  check((await upload({}, bytes, { 'sec-fetch-site': 'same-site' })).status === 403, 'from another page: 403');
 
   console.log('');
   console.log('the new admin pages render');

@@ -2,11 +2,15 @@ import Link from 'next/link';
 import { getDb } from '@/lib/db';
 import { median, studyPresenceAgreementBothLayers } from '@/lib/analysis';
 import { summariseIntraRaterCached } from '@/lib/intra-rater';
+import { getInviteTemplate } from '@/lib/invite';
 import { CORE_TARGET, INDIVIDUAL_TARGET } from '@/lib/queue';
 import { isAdmin } from '@/server/auth';
 import { inviteBase } from '@/server/invite-link';
+import { mailSettings } from '@/server/mailer';
+import type { MailSettings } from '@/server/mailer';
 import ConfirmSubmit from '@/components/ConfirmSubmit';
 import CopyLinkButton from '@/components/CopyLinkButton';
+import InviteTemplateForm from '@/components/InviteTemplateForm';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,6 +23,7 @@ interface SurgeonRow {
   onboardedAt: string | null;
   accessToken: string;
   pausedAt: string | null;
+  invitedAt: string | null;
   assigned: number;
   completed: number;
   lastActive: string | null;
@@ -62,17 +67,42 @@ type Params = {
   available?: string;
   formName?: string;
   formEmail?: string;
+  /** Set when the message belongs beside the invitation wording rather than at the top. */
+  from?: string;
+  saved?: string;
 };
 
 /** What the last admin action did, in words, so nobody has to guess whether it worked. */
-function ActionMessage({ params, nameOf }: { params: Params; nameOf: (id: number) => string }) {
+function ActionMessage({
+  params,
+  nameOf,
+  mail,
+}: {
+  params: Params;
+  nameOf: (id: number) => string;
+  mail: MailSettings | null;
+}) {
   const who = params.surgeon ? nameOf(Number(params.surgeon)) : '';
   let tone: 'ok' | 'problem' = 'ok';
   let text: string | null = null;
 
   switch (params.notice) {
     case 'added':
-      text = `${who} was added with their own list of images. Use \u201cCopy link\u201d below to send them their invitation.`;
+      text = mail
+        ? `${who} was added with their own list of images. Use \u201cSend invite\u201d below to email them their invitation.`
+        : `${who} was added with their own list of images. Use \u201cCopy link\u201d below to send them their invitation.`;
+      break;
+    case 'invited':
+      text = `Invitation emailed to ${who}.${mail?.bcc ? ` A copy went to ${mail.bcc}.` : ''}`;
+      break;
+    case 'template_saved':
+      text = 'The wording is saved. Every invitation from now on uses it.';
+      break;
+    case 'template_reset':
+      text = 'The wording is back to the original draft.';
+      break;
+    case 'test_sent':
+      text = `Saved, and a test was sent to ${mail?.from ?? 'the study inbox'}. It can take a minute to arrive.`;
       break;
     case 'link':
       text = `New link made for ${who}. Their old link no longer works. Use \u201cCopy link\u201d to send the new one.`;
@@ -114,7 +144,48 @@ function ActionMessage({ params, nameOf }: { params: Params; nameOf: (id: number
       tone = 'problem';
       text = 'That surgeon or image no longer exists. The page below is up to date.';
       break;
+    case 'paused':
+      tone = 'problem';
+      text = `${who} is paused, so no invitation was sent. Resume them first.`;
+      break;
+    case 'just_sent':
+      tone = 'problem';
+      text = `An invitation went to ${who} less than a minute ago, so a second one was not sent.`;
+      break;
+    case 'template_needs_link':
+      tone = 'problem';
+      text = 'Not saved: the message must contain {link}, where each surgeon\u2019s personal link goes.';
+      break;
+    case 'template_invalid':
+      tone = 'problem';
+      text = 'Not saved: the sender name, subject and message all need some text.';
+      break;
+    case 'mail_not_configured':
+      tone = 'problem';
+      text = 'Nothing was sent: email is not set up on the server yet. Use \u201cCopy link\u201d for now.';
+      break;
+    case 'mail_auth':
+      tone = 'problem';
+      text =
+        'Nothing was sent: the email account refused the password. The app password in the server ' +
+        'settings (SMTP_PASSWORD) needs checking, or making again.';
+      break;
+    case 'mail_unreachable':
+      tone = 'problem';
+      text = 'Nothing was sent: the server could not reach the email service. Try again in a minute.';
+      break;
+    case 'mail_rejected':
+      tone = 'problem';
+      text = who
+        ? `Nothing was sent: the email service would not accept ${who}\u2019s address. Check it for typos.`
+        : 'Nothing was sent: the email service would not accept the address.';
+      break;
+    case 'mail_failed':
+      tone = 'problem';
+      text = 'Nothing was sent: the email service reported a problem. Try again, or use \u201cCopy link\u201d.';
+      break;
   }
+  if (text && params.saved === '1' && tone === 'problem') text = `The wording was saved. ${text}`;
   if (!text) return null;
   return (
     <p
@@ -199,6 +270,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
               s.onboarded_at      AS onboardedAt,
               s.access_token      AS accessToken,
               s.paused_at         AS pausedAt,
+              s.invited_at        AS invitedAt,
               (SELECT COUNT(*) FROM assignments a WHERE a.surgeon_id = s.id) AS assigned,
               (SELECT COUNT(*) FROM annotations an
                 WHERE an.surgeon_id = s.id AND an.submitted_at IS NOT NULL)  AS completed,
@@ -250,6 +322,9 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
   const unusedForNew = pool.core > 0 ? pool.unused : Math.max(0, pool.study - CORE_TARGET);
   const canAdd = Math.floor(unusedForNew / INDIVIDUAL_TARGET);
   const base = await inviteBase();
+  const mail = mailSettings();
+  const template = getInviteTemplate(db);
+  const fromInvitation = params.from === 'invitation';
   const nameOf = (id: number) => surgeons.find((row) => row.id === id)?.name ?? 'The surgeon';
 
   // Decodes four mask PNGs per repeat pair, so it is cached against the
@@ -287,7 +362,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
         </Link>
       </p>
 
-      <ActionMessage params={params} nameOf={nameOf} />
+      {!fromInvitation && <ActionMessage params={params} nameOf={nameOf} mail={mail} />}
 
       <section id="surgeons" className="mt-8 scroll-mt-4">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-zinc-400">Surgeons</h2>
@@ -341,6 +416,20 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
                     <td className="px-4 py-3 text-zinc-400">{formatWhen(surgeon.lastActive)}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap items-center gap-2">
+                        {mail && !surgeon.pausedAt && (
+                          <form action={`/api/admin/surgeons/${surgeon.id}/invite`} method="post">
+                            <ConfirmSubmit
+                              message={
+                                `Email ${surgeon.name} their invitation at ${surgeon.email}?` +
+                                (surgeon.invitedAt ? `\n\nThey were last invited ${formatWhen(surgeon.invitedAt)}.` : '')
+                              }
+                              className="rounded-md border border-zinc-700 px-2.5 py-1 text-xs text-zinc-200
+                                         hover:border-zinc-500"
+                            >
+                              {surgeon.invitedAt ? 'Send again' : 'Send invite'}
+                            </ConfirmSubmit>
+                          </form>
+                        )}
                         {!surgeon.pausedAt && <CopyLinkButton link={`${base}/a/${surgeon.accessToken}`} />}
                         <form action={`/api/admin/surgeons/${surgeon.id}/link`} method="post">
                           <ConfirmSubmit
@@ -383,6 +472,9 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
                           Remove…
                         </Link>
                       </div>
+                      <div className="mt-1 text-xs text-zinc-500">
+                        {surgeon.invitedAt ? `emailed ${formatWhen(surgeon.invitedAt)}` : 'not emailed from here'}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -411,7 +503,9 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
             {canAdd > 0
               ? `${unusedForNew} unused images are left — enough for ${canAdd} more ${canAdd === 1 ? 'surgeon' : 'surgeons'}.`
               : `${unusedForNew} unused images are left — not enough for another surgeon, who would need ${INDIVIDUAL_TARGET}.`}{' '}
-            Then use &ldquo;Copy link&rdquo; and email them their invitation yourself.
+            {mail
+              ? 'Then click \u201cSend invite\u201d, or use \u201cCopy link\u201d to email it yourself.'
+              : 'Then use \u201cCopy link\u201d and email them their invitation yourself.'}
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
             <input
@@ -443,6 +537,39 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
             </button>
           </div>
         </form>
+
+        <details
+          id="invitation-email"
+          open={fromInvitation}
+          className="mt-4 scroll-mt-4 rounded-lg border border-zinc-800 p-4"
+        >
+          <summary className="cursor-pointer text-sm font-medium text-zinc-200">Invitation email</summary>
+          {fromInvitation && <ActionMessage params={params} nameOf={nameOf} mail={mail} />}
+          <p className="mt-3 text-xs leading-relaxed text-zinc-500">
+            {mail ? (
+              <>
+                Invitations are sent from {mail.from}
+                {mail.bcc ? `, with a hidden copy to ${mail.bcc}` : ''}. Replies go to that inbox.
+              </>
+            ) : (
+              <>
+                Email sending is not set up on the server yet, so there is no &ldquo;Send invite&rdquo; button.
+                Until it is, use &ldquo;Copy link&rdquo;. The README&rsquo;s &ldquo;Invitation emails&rdquo;
+                section says how to switch it on.
+              </>
+            )}
+          </p>
+          <InviteTemplateForm initial={template} canSend={Boolean(mail)} testAddress={mail?.from ?? null} />
+          <form action="/api/admin/invitation" method="post" className="mt-2">
+            <input type="hidden" name="intent" value="reset" />
+            <ConfirmSubmit
+              message="Put the invitation wording back to the original draft? Your changes will be lost."
+              className="text-xs text-zinc-500 hover:text-zinc-300"
+            >
+              Reset to the original wording
+            </ConfirmSubmit>
+          </form>
+        </details>
       </section>
 
       <section className="mt-10">

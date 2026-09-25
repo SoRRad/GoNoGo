@@ -1,16 +1,19 @@
 import { getDb } from '@/lib/db';
 import { ManageError, pauseSurgeon, removeSurgeon, replaceLink, resumeSurgeon } from '@/lib/manage';
 import { refuseUnlessAdminAction, withQuery } from '@/server/admin-guard';
+import { InviteRefused, sendInvitation } from '@/server/invitations';
+import { inviteBase } from '@/server/invite-link';
+import { MailError } from '@/server/mailer';
 import { seeOther } from '@/server/redirect';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
-const ACTIONS = ['link', 'pause', 'resume', 'remove'] as const;
+const ACTIONS = ['invite', 'link', 'pause', 'resume', 'remove'] as const;
 type Action = (typeof ACTIONS)[number];
 
 /**
- * One surgeon's access: a new link, pause, resume, or remove. Removing deletes
+ * One surgeon's access: email their invitation, a new link, pause, resume, or remove. Removing deletes
  * their work, so it also needs confirm=remove, which only the confirmation page
  * sends: a stray or replayed post cannot delete anyone by itself.
  */
@@ -31,6 +34,11 @@ export async function POST(
   const db = getDb();
   try {
     switch (action) {
+      case 'invite': {
+        await sendInvitation(db, surgeonId, await inviteBase());
+        console.log(`[sadi] admin emailed an invitation to surgeon ${surgeonId}`);
+        return seeOther(withQuery('/admin', { notice: 'invited', surgeon: surgeonId }) + '#surgeons');
+      }
       case 'link':
         replaceLink(db, surgeonId);
         console.log(`[sadi] admin replaced the link of surgeon ${surgeonId}`);
@@ -60,7 +68,9 @@ export async function POST(
       }
     }
   } catch (error) {
-    if (error instanceof ManageError) return seeOther(withQuery('/admin', { problem: error.code }));
+    if (error instanceof ManageError || error instanceof MailError || error instanceof InviteRefused) {
+      return seeOther(withQuery('/admin', { problem: error.code, surgeon: surgeonId }) + '#surgeons');
+    }
     throw error;
   }
 }

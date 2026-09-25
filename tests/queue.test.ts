@@ -14,7 +14,16 @@ import {
 import type { Frame } from '@/lib/db';
 
 function frame(id: number, sourceVideo: string | null): Frame {
-  return { id, filename: `f${id}.png`, source_video: sourceVideo, width: 960, height: 540, is_practice: 0, is_core: 0 };
+  return {
+    id,
+    filename: `f${id}.png`,
+    source_video: sourceVideo,
+    width: 960,
+    height: 540,
+    is_practice: 0,
+    is_core: 0,
+    content_sha256: null,
+  };
 }
 
 /** A pool of `videos` videos with `per` frames each, ids in ingest order. */

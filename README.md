@@ -33,7 +33,8 @@ annotation screen — and around keeping every surgeon's judgement independent o
 - **The timer is never shown**, and it pauses whenever the tab is not in front.
 - **Nothing is fetched from a third party.** No webfonts, no CDN, no analytics. Next.js telemetry
   is disabled in the image and in the repo, and the Content Security Policy pins every source to
-  this origin.
+  this origin. The server's only outside contact is the email account, if one is set up, and only
+  when the admin sends an invitation.
 - **Access tokens stay out of logs.** A surgeon's link is a working credential, so
   `Referrer-Policy: no-referrer` stops the browser leaking it to anywhere the page navigates, and
   the Caddy config excludes `/a/*` from the access log entirely.
@@ -276,10 +277,26 @@ line in `docker compose logs app`.
 - **Remove…** — deletes the surgeon, their queue and every drawing they made,
   after a confirmation page listing exactly what goes. Their unique images
   return to the pool for the next surgeon. Use Pause instead to keep their work.
+- **Send invite** — emails the surgeon their link, with a hidden copy to the
+  sending inbox, once email is set up ([step 9](#9-invitation-emails)). The
+  table shows when each surgeon was last emailed; a second click within a minute
+  is taken as a double click and sends nothing.
+- **Invitation email** — the subject, sender name and message, editable, with
+  `{name}` and `{link}` filled in per surgeon. It cannot be saved without
+  `{link}`. "Save and send a test" sends it to the study inbox with an example
+  name and a link that deliberately does not work.
 - **Manage images** (`/admin/images`) — every image, by operation. Opening one
   offers **Remove this image…**: it leaves every surgeon's list, with any
   drawings on it, and the file is deleted. Each list closes up with no gaps, and
   a surgeon who was on that image is moved on to their next one.
+- **Add images** (on `/admin/images`) — choose a folder with one sub-folder per
+  operation, or one operation's folder. Each image is sent on its own, so a
+  dropped connection costs one image, and the page shows progress. New images
+  join the spare pool for surgeons added from then on; nobody's current list
+  changes. An image already in the study is recognised by its content and
+  skipped, even renamed. Only PNG and JPEG up to 30 MB, judged by the bytes
+  rather than the file name; a folder called `practice` is left out, since the
+  practice set is chosen once at setup.
 
 Removals cannot be undone except from a backup, which is why each has its own
 confirmation page. A surgeon who is signed in when their list changes sees a
@@ -570,6 +587,62 @@ docker compose exec app npm run export
 # lands in /mnt/disks/sadi-data/exports/ on the host
 ```
 
+### 9. Invitation emails
+
+Optional. Without it the admin page offers **Copy link** only; with it, each
+surgeon also gets a **Send invite** button. With a Gmail account:
+
+1. Turn on 2-Step Verification for the account that should send
+   (Google Account → Security).
+2. Make an app password for it at <https://myaccount.google.com/apppasswords>.
+   Google shows 16 letters once. Treat it like the account's password: it lives
+   only in `.env` on the VM, and can be revoked on the same page at any time.
+3. On the VM, add both to `.env` without the password touching the screen or
+   the shell history, and restart the app:
+
+```bash
+cd /opt/sadi/app
+read -rp 'Gmail address: ' SMTP_USER
+read -rsp 'App password (typing is hidden): ' SMTP_PASSWORD; echo
+sed -i '/^SMTP_USER=/d; /^SMTP_PASSWORD=/d' .env
+printf 'SMTP_USER=%s\nSMTP_PASSWORD=%s\n' "$SMTP_USER" "${SMTP_PASSWORD// /}" >> .env
+unset SMTP_PASSWORD
+docker compose up -d
+```
+
+4. In `/admin`, open **Invitation email**, check the wording and click **Save
+   and send a test**. If the account refuses the password, the page says so;
+   make a new app password and repeat step 3.
+
+Each invitation carries a hidden copy to the sending inbox (`INVITE_BCC=none`
+turns that off); Gmail also keeps it under Sent. Other providers work too: set
+`SMTP_HOST`, `SMTP_PORT` and, if needed, `MAIL_FROM` (see
+[Configuration](#configuration)).
+
+### 10. A web address of your own
+
+The sslip.io name works but looks odd in an email. To move the study to a name
+such as `gonogo.example.org`, keeping every link already sent working:
+
+1. Wherever the domain's DNS is managed (the registrar, or the host of the
+   domain's website), add an **A record**: name `gonogo`, value the VM's static
+   IP (`gcloud compute addresses list`). There must be no other record for that
+   name: no CNAME, no AAAA.
+2. Wait ten minutes or so, then on the VM:
+
+```bash
+cd /opt/sadi/app && git pull
+./scripts/set-domain.sh gonogo.example.org
+```
+
+The script checks the DNS record first and changes nothing if it is not there
+yet. Then it serves the study at both addresses, waits until the new one has its
+certificate, switches `BASE_URL` so new links use it, and only then turns the old
+address into a forward to the same path on the new one, so `/a/<token>` links
+already emailed keep working. The previous Caddy configuration is kept beside the
+new one, and running it again after a finished move does nothing. Sign-ins do not
+carry across addresses: sign in to `/admin` again at the new one.
+
 ### Updating
 
 ```bash
@@ -624,6 +697,12 @@ silently failed for somebody else.
 | `DATA_HOST_PATH` | compose only | Host directory behind the named volume. Defaults to `./data`. |
 | `BACKUP_BUCKET` | backups only | Google Cloud Storage bucket for `scripts/backup.sh`, e.g. `gs://sadi-study-backups`. Nothing is uploaded unless it is set. |
 | `KEEP_LOCAL` | no | Local backup archives to keep on the VM. Defaults to 7. |
+| `SMTP_USER` | invitations only | The account invitations are sent from, e.g. a Gmail address. With `SMTP_PASSWORD` unset, email is off and the admin page offers Copy link only. |
+| `SMTP_PASSWORD` | invitations only | That account's password; for Gmail an app password. Spaces are ignored. |
+| `SMTP_HOST` / `SMTP_PORT` | no | Defaults `smtp.gmail.com` / `465`. |
+| `SMTP_SECURE` | no | `true` for TLS from the start, `false` for STARTTLS (which is then required). Defaults to `true` on port 465. |
+| `MAIL_FROM` | no | The From address. Defaults to `SMTP_USER`; Gmail only sends as the account or its verified aliases. |
+| `INVITE_BCC` | no | Hidden copy of each invitation. Defaults to `MAIL_FROM`; `none` for no copy. |
 
 ---
 
@@ -742,6 +821,15 @@ in-memory SQLite database built from the real schema:
   mask file degrades to all-zero instead of throwing.
 - **Export** — CSV quoting round-trips commas, quotes and newlines; the consensus
   mask recomputes to the same pixels from the individual masks shipped beside it.
+- **Invitations** — each is sent through a real SMTP exchange, to a small
+  stand-in mail server in the test: the surgeon gets their own link and the Bcc
+  stays out of the headers; a double click sends one email; a refused password
+  is reported as such and leaves no "invited" mark; the wording cannot be saved
+  without `{link}`, and line breaks cannot reach a header.
+- **Uploads** — an image already in the study is skipped by content, including
+  images loaded before hashes were kept; a different image with the same name is
+  never overwritten; non-images, GIFs, empty and oversize files, a `practice`
+  folder and a nearly full disk are refused with nothing left behind.
 - **Management** — adding a surgeon gives them the established core set, and a
   refused add leaves nothing behind; the core set survives a pilot's testers
   being removed; pause, resume and a new link each invalidate or restore the
